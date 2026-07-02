@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KAPmodern Prototyp v7: Kreativteam</title>
+<style>
+  :root{ --paper:#ece5d8; --ink:#2c292c; }
+  html,body{ margin:0; padding:0; background:var(--paper); color:var(--ink);
+    font-family:-apple-system,"Helvetica Neue",Arial,sans-serif; }
+  .wrap{ max-width:920px; margin:0 auto; padding:52px 22px 80px; }
+  h1{ font-weight:600; font-size:26px; letter-spacing:.3px; margin:0 0 6px; }
+  .sub{ color:#6a655e; font-size:15px; margin:0 0 34px; line-height:1.5; }
+  .grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media(max-width:680px){ .grid{ grid-template-columns:1fr; } }
+  a.card{ display:block; text-decoration:none; color:inherit; background:rgba(255,255,255,.35);
+    border:1px solid rgba(44,41,44,.16); border-radius:14px; padding:20px 20px 18px;
+    transition:transform .12s ease, background .12s ease, border-color .12s; }
+  a.card:hover{ transform:translateY(-2px); background:rgba(255,255,255,.6); border-color:rgba(44,41,44,.4); }
+  .k{ font-size:12px; letter-spacing:1.2px; text-transform:uppercase; color:#8a847b; }
+  .t{ font-size:20px; font-weight:600; margin:4px 0 8px; }
+  .d{ font-size:14px; line-height:1.5; color:#4b4740; }
+  .open{ margin-top:12px; font-size:13px; color:#2c292c; opacity:.7; }
+  .foot{ margin-top:30px; color:#6a655e; font-size:13px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kreativteam: aus dem Bleistiftstrich erwacht etwas</h1>
+  <p class="sub">Vier Richtungen, parallel gebaut. Zeichne in jedem eine Geste (Maus, Finger, Stift), dann schau, wie sie lebendig wird. Regler variieren, "Stecker ziehen" hält an, "Vollbild" fuer den vollen Eindruck.</p>
+  <div class="grid">
+    <a class="card" href="./v7_stroemung.html">
+      <div class="k">01 Bewegung als Auflösung</div>
+      <div class="t">Strömung</div>
+      <div class="d">Der Strich zerfällt in Graphit-Staub und wird von einer atmenden Strömung getragen, wie Tusche in Wasser. Löst sich auf, findet wieder zusammen. Meditativ.</div>
+      <div class="open">öffnen →</div>
+    </a>
+    <a class="card" href="./v7_trickfilm.html">
+      <div class="k">02 Bewegung als Figur</div>
+      <div class="t">Trickfilm, kochende Linie</div>
+      <div class="d">Die Linie kocht wie ein handgezeichneter Bleistift-Test, ein Wesen erwacht, atmet, streckt sich, geht los. Mit blassen Onion-Skin-Geisterbildern.</div>
+      <div class="open">öffnen →</div>
+    </a>
+    <a class="card" href="./v7_schwarm.html">
+      <div class="k">03 Bewegung als Schwarm</div>
+      <div class="t">Schwarm, Murmuration</div>
+      <div class="d">Aus dem Strich löst sich ein Schwarm aus tausenden Graphit-Marken, hält die Form, bricht aus, wirbelt wie Stare, findet zurück. Kollektiv, schimmernd.</div>
+      <div class="open">öffnen →</div>
+    </a>
+    <a class="card" href="./v7_morphogenese.html">
+      <div class="k">04 Bewegung als Wucherung</div>
+      <div class="t">Morphogenese</div>
+      <div class="d">Der Strich wird zur lebenden Linie, die sich selbst abstößt und in Windungen faltet, wie Hirnkorallen oder Flechten. Wuchert langsam, endlos, dicht.</div>
+      <div class="open">öffnen →</div>
+    </a>
+  </div>
+  <p class="foot">Alles reine Prozeduren im Browser, noch keine echte generative KI. Sag, welche Richtung sich richtig anfühlt, dann bauen wir die eine tief aus (und danach die ControlNet-Stufe fuer echtes Figuerliches).</p>
+</div>
+</body>
+</html>

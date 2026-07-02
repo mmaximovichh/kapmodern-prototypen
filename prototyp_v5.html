@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>KAPmodern Prototyp v5: fortlaufend schraffiert</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; background:#ece5d8; }
+  #c { display:block; position:fixed; inset:0; touch-action:none; cursor:crosshair; }
+  #grain { position:fixed; inset:0; pointer-events:none; opacity:.06; z-index:2; mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+  #phase { position:fixed; top:14px; left:16px; z-index:4; color:rgba(40,38,44,.6); font-size:14px; letter-spacing:.4px; }
+  #hint { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    color:rgba(40,38,44,.5); font-size:22px; pointer-events:none; transition:opacity .8s ease; z-index:3; text-align:center; }
+  #hint.gone { opacity:0; }
+  #ui { position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    display:flex; gap:8px; align-items:center; padding:8px 10px; z-index:5;
+    background:rgba(240,236,226,.85); border:1px solid rgba(40,38,44,.16);
+    border-radius:14px; backdrop-filter:blur(6px); flex-wrap:wrap; justify-content:center; max-width:94vw; }
+  #ui button, #ui .lbl { color:#2a282e; background:rgba(40,38,44,.05);
+    border:1px solid rgba(40,38,44,.18); border-radius:9px; padding:8px 12px;
+    font-size:13px; cursor:pointer; transition:background .15s, border-color .15s; user-select:none; }
+  #ui button:hover { background:rgba(40,38,44,.12); }
+  #ui button.on { background:rgba(40,38,44,.16); border-color:rgba(40,38,44,.5); }
+  #ui button.danger { background:rgba(150,40,40,.12); border-color:rgba(150,40,40,.4); color:#7a1f1f; }
+  #ui .lbl { cursor:default; display:flex; align-items:center; gap:8px; }
+  #ui input[type=range] { width:110px; accent-color:#3a3740; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="grain"></div>
+<div id="phase">Phase: Suchen (0%)</div>
+<div id="hint">Zeichne eine Geste. Dann zieh die Entwicklung auf und schau, wie sie sich schraffiert.</div>
+<div id="ui">
+  <button id="btnDuett" class="on">Duett: an</button>
+  <div class="lbl">Entwicklung <input id="slDev" type="range" min="0" max="100" value="0"></div>
+  <button id="btnAuto">Entwicklung starten</button>
+  <div class="lbl">Leben <input id="slLife" type="range" min="0" max="100" value="40"></div>
+  <div class="lbl">Strich <input id="slThick" type="range" min="40" max="220" value="100"></div>
+  <button id="btnPlug" class="danger">Stecker ziehen</button>
+  <button id="btnClear">Leeren</button>
+  <button id="btnFull">Vollbild</button>
+</div>
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W,H,DPR; const PAPER=[236,229,216];
+function resize(){ DPR=Math.min(window.devicePixelRatio||1,2); W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.fillStyle='rgb('+PAPER.join(',')+')'; ctx.fillRect(0,0,W,H); }
+window.addEventListener('resize',resize); resize();
+
+// ---- Zustand ----
+let figures=[], current=null, devTarget=0, auto=false, duett=true, power=true;
+let clock=0, lastT=performance.now(), thick=1, life=0.40;
+const MAXFIG=8;
+
+// ---- Hilfen ----
+function n1(x){ const s=Math.sin(x*127.1)*43758.5453; return (s-Math.floor(s))-0.5; }
+function smooth(x,a,b){ const t=Math.max(0,Math.min(1,(x-a)/(b-a))); return t*t*(3-2*t); }
+function noise1(x){ const i=Math.floor(x), f=x-i, u=f*f*(3-2*f), a=n1(i), b=n1(i+1); return a+(b-a)*u; }
+function fbm(x){ return noise1(x)*0.6+noise1(x*2.1+5.3)*0.3+noise1(x*4.3+9.1)*0.15; }
+function resample(pts,n){ if(pts.length<2) return pts.slice();
+  const d=[0]; for(let i=1;i<pts.length;i++) d.push(d[i-1]+Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y));
+  const total=d[d.length-1]||1, out=[];
+  for(let k=0;k<n;k++){ const target=total*k/(n-1); let i=1; while(i<d.length-1&&d[i]<target) i++;
+    const t=(target-d[i-1])/((d[i]-d[i-1])||1);
+    out.push({x:pts[i-1].x+(pts[i].x-pts[i-1].x)*t, y:pts[i-1].y+(pts[i].y-pts[i-1].y)*t}); } return out; }
+function normals(sp){ const m=sp.length,out=[]; for(let i=0;i<m;i++){ const a=sp[Math.max(0,i-1)],b=sp[Math.min(m-1,i+1)];
+  let tx=b.x-a.x,ty=b.y-a.y; const tl=Math.hypot(tx,ty)||1; out.push({x:-ty/tl,y:tx/tl}); } return out; }
+function bbox(pts){ let a=1e9,b=1e9,c=-1e9,d=-1e9; for(const p of pts){ if(p.x<a)a=p.x; if(p.y<b)b=p.y; if(p.x>c)c=p.x; if(p.y>d)d=p.y; }
+  return {minx:a,miny:b,maxx:c,maxy:d,w:c-a,h:d-b}; }
+function pathLen(pts){ let l=0; for(let i=1;i<pts.length;i++) l+=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y); return l; }
+function curliness(pts){ let s=0; for(let i=1;i<pts.length-1;i++){
+  let a1=Math.atan2(pts[i].y-pts[i-1].y,pts[i].x-pts[i-1].x), a2=Math.atan2(pts[i+1].y-pts[i].y,pts[i+1].x-pts[i].x);
+  let da=Math.abs(a2-a1); if(da>Math.PI) da=2*Math.PI-da; s+=da; } return s; }
+function clampPath(pts){ const m=40; return pts.map(p=>({x:Math.max(m,Math.min(W-m,p.x)),y:Math.max(m,Math.min(H-m,p.y))})); }
+function jitterPath(pts,amp){ const nm=normals(pts); return pts.map((p,i)=>({x:p.x+nm[i].x*(Math.random()-0.5)*amp,y:p.y+nm[i].y*(Math.random()-0.5)*amp})); }
+function analyze(pts){ const bb=bbox(pts); return {len:pathLen(pts),cx:bb.minx+bb.w/2,cy:bb.miny+bb.h/2,curl:curliness(pts),bb}; }
+
+// ---- eine Figur anlegen: das System liest die Geste und legt Koerper, Kopf, Glieder an ----
+function addFigure(pts,opts){ opts=opts||{};
+  const spine=resample(pts,26), n=spine.length, bb=bbox(spine), aspect=bb.h/(bb.w+1), curl=curliness(spine);
+  const fig={ spine, origin:spine.map(p=>({x:p.x,y:p.y})), seed:Math.random()*1000, tone:opts.tone||0, dev:0,
+    tempo:0.6+Math.random()*0.7, bodyW:(6+Math.min(16,curl*2.2))*(1+Math.random()*0.3),
+    headW:5+Math.random()*6, upright:aspect>1.25, headEnd:0, lightSide:Math.random()<0.5?1:-1,
+    limbR:3.5+Math.random()*3.5, limbs:[] };
+  if(fig.upright) fig.headEnd=spine[0].y<spine[n-1].y?0:1; else fig.headEnd=Math.random()<0.5?0:1;
+  const nl=fig.upright?2:3+Math.floor(Math.random()*2), side=Math.random()<0.5?1:-1;
+  for(let k=0;k<nl;k++) fig.limbs.push({ u:fig.upright?0.55+Math.random()*0.4:0.22+k/nl*0.55,
+    dir:fig.upright?(Math.random()<0.5?1:-1):side, maxLen:fig.upright?28+Math.random()*36:14+Math.random()*20,
+    seg:2+Math.floor(Math.random()*2), seed:Math.random()*100 });
+  figures.push(fig); while(figures.length>MAXFIG) figures.shift(); return fig; }
+
+// ---- unvorhersehbare Antwort der KI (vier Strategien) ----
+function makeAIAnswer(src){ const g=analyze(src.origin), strat=Math.floor(Math.random()*4); let pts;
+  if(strat===0){ const n=src.origin.length, start=src.origin[n-1];
+    let dx=src.origin[n-1].x-src.origin[0].x, dy=src.origin[n-1].y-src.origin[0].y; const dl=Math.hypot(dx,dy)||1;
+    let a=Math.atan2(dy/dl,dx/dl)+Math.PI+(Math.random()-0.5)*1.2; const steps=16, seg=g.len*(0.6+Math.random()*0.7)/steps;
+    let x=start.x,y=start.y; pts=[start]; for(let i=0;i<steps;i++){ a+=(Math.random()-0.5)*0.5; x+=Math.cos(a)*seg; y+=Math.sin(a)*seg; pts.push({x,y}); }
+  } else if(strat===1){ const cx=g.cx,cy=g.cy,ang=(Math.random()-0.5)*2.2,sc=0.6+Math.random()*0.9,flip=Math.random()<0.5?-1:1;
+    const co=Math.cos(ang),si=Math.sin(ang),tx=(Math.random()-0.5)*W*0.35,ty=(Math.random()-0.5)*H*0.35;
+    pts=src.origin.map(p=>{ let x=(p.x-cx)*flip,y=(p.y-cy); return {x:cx+(x*co-y*si)*sc+tx,y:cy+(x*si+y*co)*sc+ty}; });
+  } else if(strat===2){ const n=src.origin.length, a0=Math.floor(Math.random()*n*0.4), b0=Math.min(n,a0+Math.floor(n*(0.3+Math.random()*0.4)));
+    pts=src.origin.slice(a0,b0); if(pts.length<2) pts=src.origin.slice();
+    let p2=pts[pts.length-1], p1=pts[Math.max(0,pts.length-2)], a=Math.atan2(p2.y-p1.y,p2.x-p1.x), x=p2.x, y=p2.y, seg=Math.max(10,pathLen(pts)/pts.length);
+    const grow=6+Math.floor(Math.random()*8); for(let i=0;i<grow;i++){ a+=(Math.random()-0.5)*0.6; x+=Math.cos(a)*seg; y+=Math.sin(a)*seg; pts.push({x,y}); }
+  } else { const start={x:g.cx+(Math.random()-0.5)*W*0.3,y:g.cy+(Math.random()-0.5)*H*0.3};
+    const steps=14+Math.floor(Math.random()*8), seg=Math.max(9,g.len/steps), wig=0.3+g.curl/steps;
+    let a=Math.random()*6.28,x=start.x,y=start.y; pts=[start]; for(let i=0;i<steps;i++){ a+=(Math.random()-0.5)*wig*2; x+=Math.cos(a)*seg; y+=Math.sin(a)*seg; pts.push({x,y}); } }
+  pts=clampPath(jitterPath(pts,4+Math.random()*6)); setTimeout(()=>addFigure(pts,{tone:1}),150+Math.random()*500);
+  if(Math.random()<0.3){ const start={x:g.cx+(Math.random()-0.5)*W*0.4,y:g.cy+(Math.random()-0.5)*H*0.4};
+    const steps=12, seg=Math.max(9,g.len/steps); let a=Math.random()*6.28,x=start.x,y=start.y,p2=[start];
+    for(let i=0;i<steps;i++){ a+=(Math.random()-0.5)*0.9; x+=Math.cos(a)*seg; y+=Math.sin(a)*seg; p2.push({x,y}); }
+    setTimeout(()=>addFigure(clampPath(jitterPath(p2,8)),{tone:1}),500+Math.random()*500); } }
+
+// ---- die lebende Pose: langsam, kohaerent, kein Zappeln ----
+function poseSpine(fig,t){ const sp=fig.spine, m=sp.length, out=[], tp=fig.tempo, A=(2+7*life)*(0.4+0.6*fig.dev);
+  const dx=fbm(t*0.11*tp+fig.seed)*(2+9*life), dy=fbm(t*0.11*tp+fig.seed+30)*(2+9*life);
+  for(let i=0;i<m;i++){ const a=sp[Math.max(0,i-1)],b=sp[Math.min(m-1,i+1)]; let tx=b.x-a.x,ty=b.y-a.y; const tl=Math.hypot(tx,ty)||1;
+    const bend=fbm(i*0.15+t*0.19*tp+fig.seed*1.4); out.push({x:sp[i].x-ty/tl*bend*A+dx, y:sp[i].y+tx/tl*bend*A+dy}); } return out; }
+function radMain(i,fig){ const n=fig.spine.length,u=i/(n-1); let r=Math.pow(Math.sin(Math.PI*u),0.6)*fig.bodyW;
+  r+=Math.exp(-Math.pow((u-fig.headEnd)/0.14,2))*fig.headW*0.7; return r*(0.25+0.75*smooth(fig.dev,0.15,0.95)); }
+function limbBone(fig,L,sp,nm,t,breath){ const grow=smooth(fig.dev,0.5,1), len=L.maxLen*grow; if(len<3) return null;
+  const idx=Math.round(L.u*(sp.length-1)), base=sp[idx], nb=nm[idx], swing=noise1(t*0.4*fig.tempo+L.seed)*0.5*grow*(0.4+life);
+  const pts=[base], rads=[fig.limbR*0.9*breath];
+  for(let k=1;k<=L.seg;k++){ const f=k/L.seg, bend=(k>L.seg/2?swing:swing*0.4);
+    const dx=nb.x*L.dir*Math.cos(bend)-nb.y*L.dir*Math.sin(bend), dy=nb.x*L.dir*Math.sin(bend)+nb.y*L.dir*Math.cos(bend);
+    pts.push({x:base.x+dx*len*f,y:base.y+dy*len*f}); rads.push(fig.limbR*(1-0.7*f)*breath+1); }
+  return {pts,rads}; }
+
+// ---- eine kurze Graphit-Marke: gebogen, koernig, an den Enden verlaufend ----
+function mark(x,y,ang,len,w,alpha,tone){ const col=tone?'62,58,68':'44,41,44';
+  const hx=Math.cos(ang),hy=Math.sin(ang),px=-hy,py=hx, curve=(Math.random()-0.5)*len*0.18;
+  const x0=x-hx*len/2, y0=y-hy*len/2, xm=x+px*curve, ym=y+py*curve, x2=x+hx*len/2, y2=y+hy*len/2;
+  ctx.lineCap='round'; const passes=1+(Math.random()<0.4?1:0);
+  for(let p=0;p<passes;p++){ const jx=(Math.random()-0.5)*0.8, jy=(Math.random()-0.5)*0.8, grain=0.6+Math.random()*0.4;
+    ctx.beginPath(); ctx.moveTo(x0+jx,y0+jy); ctx.quadraticCurveTo(xm+jx,ym+jy,x2+jx,y2+jy);
+    ctx.strokeStyle='rgba('+col+','+(alpha*grain)+')'; ctx.lineWidth=Math.max(0.4,w*(0.6+Math.random()*0.5)); ctx.stroke(); } }
+
+// ---- fortlaufend schraffieren: Frame fuer Frame frische Striche ins Feld setzen ----
+function drawFigure(fig){ const t=clock*0.001, dev=fig.dev, sp=poseSpine(fig,t), nm=normals(sp);
+  const breath=1+0.05*Math.sin(t*1.1*fig.tempo+fig.seed)*(0.4+life);
+  const bones=[{pts:sp, rads:sp.map((p,i)=>radMain(i,fig)*breath)}];
+  const grow=smooth(dev,0.5,1);
+  if(grow>0.02) for(const L of fig.limbs){ const b=limbBone(fig,L,sp,nm,t,breath); if(b) bones.push(b); }
+  const lens=bones.map(b=>pathLen(b.pts)), totalLen=lens.reduce((a,c)=>a+c,0)||1;
+  const N=Math.floor((8+60*life)*(0.5+dev*1.3));
+  for(let k=0;k<N;k++){ let r=Math.random()*totalLen, bi=0; while(bi<bones.length-1 && r>lens[bi]){ r-=lens[bi]; bi++; }
+    const b=bones[bi], m=b.pts.length, fu=Math.random()*(m-1), i0=Math.floor(fu), fr=fu-i0, i1=Math.min(m-1,i0+1);
+    const B={x:b.pts[i0].x+(b.pts[i1].x-b.pts[i0].x)*fr, y:b.pts[i0].y+(b.pts[i1].y-b.pts[i0].y)*fr};
+    let tx=b.pts[i1].x-b.pts[i0].x, ty=b.pts[i1].y-b.pts[i0].y; const tl=Math.hypot(tx,ty)||1; tx/=tl; ty/=tl; const nx=-ty, ny=tx;
+    const R=b.rads[i0]+(b.rads[i1]-b.rads[i0])*fr, edge=Math.random()<0.28;
+    let tt = edge ? (Math.random()<0.5?-1:1)*(0.85+Math.random()*0.2) : (Math.random()*2-1);
+    const P={x:B.x+nx*tt*R, y:B.y+ny*tt*R};
+    let ang=Math.atan2(ty,tx); if(!edge && Math.random()<0.5) ang+=(Math.random()<0.5?0.6:-0.6); ang+=(Math.random()-0.5)*0.25;
+    const len=(edge?(5+R*0.25):(6+R*0.55))*(0.7+Math.random()*0.6);
+    let alpha; if(edge){ alpha=0.14; } else { alpha=0.16*(0.4+0.6*(1-Math.abs(tt)))*(0.7+0.3*(tt*fig.lightSide*0.5+0.5)); }
+    mark(P.x,P.y,ang,len, thick*(edge?1.0:(0.8+Math.random()*0.6)), alpha, fig.tone); } }
+
+// ---- Hauptschleife ----
+const phaseEl=document.getElementById('phase');
+function loop(now){ const dt=now-lastT; lastT=now; if(power) clock+=dt;
+  if(auto&&power) devTarget=Math.min(1,devTarget+dt*0.000022);
+  if(power){ ctx.fillStyle='rgba('+PAPER.join(',')+',0.028)'; ctx.fillRect(0,0,W,H);
+    for(const f of figures){ f.dev+=(devTarget-f.dev)*0.03; drawFigure(f); } }
+  if(current&&current.pts.length>1){ ctx.lineCap='round';
+    for(let i=1;i<current.pts.length;i++){ ctx.beginPath(); ctx.moveTo(current.pts[i-1].x,current.pts[i-1].y);
+      ctx.lineTo(current.pts[i].x,current.pts[i].y); ctx.strokeStyle='rgba(44,41,44,0.5)'; ctx.lineWidth=1.8*thick; ctx.stroke(); } }
+  const d=devTarget, name=d<0.25?'Suchen':d<0.5?'Verdichten':d<0.75?'Formfindung':'Erwachen';
+  phaseEl.textContent='Phase: '+name+'  ('+Math.round(d*100)+'%)'; requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+// ---- Eingabe ----
+let pressing=false; const hint=document.getElementById('hint');
+cv.addEventListener('pointerdown',e=>{ pressing=true; cv.setPointerCapture(e.pointerId); current={pts:[{x:e.clientX,y:e.clientY}]}; hint.classList.add('gone'); });
+cv.addEventListener('pointermove',e=>{ if(!pressing||!current) return; const last=current.pts[current.pts.length-1], dx=e.clientX-last.x, dy=e.clientY-last.y;
+  if(dx*dx+dy*dy>24) current.pts.push({x:e.clientX,y:e.clientY}); });
+function endStroke(){ if(!pressing) return; pressing=false;
+  if(current&&current.pts.length>1){ const f=addFigure(current.pts.slice(),{tone:0}); if(duett) makeAIAnswer(f); } current=null; }
+cv.addEventListener('pointerup',endStroke); cv.addEventListener('pointercancel',endStroke);
+
+// ---- Bedienung ----
+const btnDuett=document.getElementById('btnDuett'),btnAuto=document.getElementById('btnAuto'),btnPlug=document.getElementById('btnPlug'),
+  slDev=document.getElementById('slDev'),slLife=document.getElementById('slLife'),slThick=document.getElementById('slThick');
+btnDuett.onclick=()=>{ duett=!duett; btnDuett.textContent='Duett: '+(duett?'an':'aus'); btnDuett.classList.toggle('on',duett); };
+slDev.oninput=()=>{ auto=false; btnAuto.classList.remove('on'); btnAuto.textContent='Entwicklung starten'; devTarget=slDev.value/100; };
+btnAuto.onclick=()=>{ auto=!auto; btnAuto.classList.toggle('on',auto); btnAuto.textContent=auto?'Entwicklung anhalten':'Entwicklung starten'; };
+slLife.oninput=()=>{ life=slLife.value/100; };
+slThick.oninput=()=>{ thick=slThick.value/100; };
+btnPlug.onclick=()=>{ power=!power; btnPlug.textContent=power?'Stecker ziehen':'Stecker rein'; document.body.style.filter=power?'none':'contrast(.92) brightness(.98)'; };
+document.getElementById('btnClear').onclick=()=>{ figures=[]; current=null; devTarget=0; slDev.value=0; auto=false;
+  btnAuto.classList.remove('on'); btnAuto.textContent='Entwicklung starten'; ctx.fillStyle='rgb('+PAPER.join(',')+')'; ctx.fillRect(0,0,W,H); };
+document.getElementById('btnFull').onclick=()=>{ if(!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); };
+setInterval(()=>{ if(auto) slDev.value=Math.round(devTarget*100); },150);
+</script>
+</body>
+</html>

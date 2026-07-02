@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>KAPmodern Prototyp v6: Wachstum</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; background:#ece5d8; }
+  #c { display:block; position:fixed; inset:0; touch-action:none; cursor:crosshair; }
+  #grain { position:fixed; inset:0; pointer-events:none; opacity:.06; z-index:2; mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+  #status { position:fixed; top:14px; left:16px; z-index:4; color:rgba(40,38,44,.55); font-size:14px; letter-spacing:.4px; }
+  #hint { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    color:rgba(40,38,44,.5); font-size:22px; pointer-events:none; transition:opacity .8s ease; z-index:3; text-align:center; }
+  #hint.gone { opacity:0; }
+  #ui { position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    display:flex; gap:8px; align-items:center; padding:8px 10px; z-index:5;
+    background:rgba(240,236,226,.85); border:1px solid rgba(40,38,44,.16);
+    border-radius:14px; backdrop-filter:blur(6px); flex-wrap:wrap; justify-content:center; max-width:94vw; }
+  #ui button, #ui .lbl { color:#2a282e; background:rgba(40,38,44,.05);
+    border:1px solid rgba(40,38,44,.18); border-radius:9px; padding:8px 12px;
+    font-size:13px; cursor:pointer; transition:background .15s, border-color .15s; user-select:none; }
+  #ui button:hover { background:rgba(40,38,44,.12); }
+  #ui button.on { background:rgba(40,38,44,.16); border-color:rgba(40,38,44,.5); }
+  #ui button.danger { background:rgba(150,40,40,.12); border-color:rgba(150,40,40,.4); color:#7a1f1f; }
+  #ui .lbl { cursor:default; display:flex; align-items:center; gap:8px; }
+  #ui input[type=range] { width:120px; accent-color:#3a3740; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="grain"></div>
+<div id="status">ruht</div>
+<div id="hint">Zeichne eine Geste. Sie fängt an zu wachsen.</div>
+<div id="ui">
+  <button id="btnDuett" class="on">Duett: an</button>
+  <div class="lbl">Leben <input id="slLife" type="range" min="0" max="100" value="45"></div>
+  <div class="lbl">Wildheit <input id="slWild" type="range" min="0" max="100" value="45"></div>
+  <div class="lbl">Strich <input id="slThick" type="range" min="40" max="220" value="100"></div>
+  <button id="btnPlug" class="danger">Stecker ziehen</button>
+  <button id="btnClear">Leeren</button>
+  <button id="btnFull">Vollbild</button>
+</div>
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W,H,DPR; const PAPER=[236,229,216];
+function paintPaper(){ ctx.fillStyle='rgb('+PAPER.join(',')+')'; ctx.fillRect(0,0,W,H); }
+function resize(){ DPR=Math.min(window.devicePixelRatio||1,2); W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); paintPaper(); }
+window.addEventListener('resize',resize); resize();
+
+// ---- Zustand ----
+let tips=[], current=null, lastPt=null, duett=true, power=true;
+let clock=0, lastT=performance.now(), thick=1, life=0.45, wild=0.45;
+const TIPCAP=650;
+
+// ---- Hilfen ----
+function n1(x){ const s=Math.sin(x*127.1)*43758.5453; return (s-Math.floor(s))-0.5; }
+function noise2(x,y){ const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi, u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=n1(xi+yi*57.1), b=n1(xi+1+yi*57.1), c=n1(xi+(yi+1)*57.1), d=n1(xi+1+(yi+1)*57.1);
+  const ab=a+(b-a)*u, cd=c+(d-c)*u; return ab+(cd-ab)*v; }
+function resample(pts,n){ if(pts.length<2) return pts.slice();
+  const d=[0]; for(let i=1;i<pts.length;i++) d.push(d[i-1]+Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y));
+  const total=d[d.length-1]||1, out=[]; for(let k=0;k<n;k++){ const target=total*k/(n-1); let i=1; while(i<d.length-1&&d[i]<target) i++;
+    const t=(target-d[i-1])/((d[i]-d[i-1])||1); out.push({x:pts[i-1].x+(pts[i].x-pts[i-1].x)*t, y:pts[i-1].y+(pts[i].y-pts[i-1].y)*t}); } return out; }
+function normals(sp){ const m=sp.length,out=[]; for(let i=0;i<m;i++){ const a=sp[Math.max(0,i-1)],b=sp[Math.min(m-1,i+1)];
+  let tx=b.x-a.x,ty=b.y-a.y; const tl=Math.hypot(tx,ty)||1; out.push({x:-ty/tl,y:tx/tl}); } return out; }
+function pathLen(pts){ let l=0; for(let i=1;i<pts.length;i++) l+=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y); return l; }
+function bbox(pts){ let a=1e9,b=1e9,c=-1e9,d=-1e9; for(const p of pts){ if(p.x<a)a=p.x; if(p.y<b)b=p.y; if(p.x>c)c=p.x; if(p.y>d)d=p.y; } return {minx:a,miny:b,maxx:c,maxy:d,w:c-a,h:d-b}; }
+function curliness(pts){ let s=0; for(let i=1;i<pts.length-1;i++){ let a1=Math.atan2(pts[i].y-pts[i-1].y,pts[i].x-pts[i-1].x), a2=Math.atan2(pts[i+1].y-pts[i].y,pts[i+1].x-pts[i].x);
+  let da=Math.abs(a2-a1); if(da>Math.PI) da=2*Math.PI-da; s+=da; } return s; }
+function clampPath(pts){ const m=40; return pts.map(p=>({x:Math.max(m,Math.min(W-m,p.x)),y:Math.max(m,Math.min(H-m,p.y))})); }
+function jitterPath(pts,amp){ const nm=normals(pts); return pts.map((p,i)=>({x:p.x+nm[i].x*(Math.random()-0.5)*amp,y:p.y+nm[i].y*(Math.random()-0.5)*amp})); }
+function analyze(pts){ const bb=bbox(pts); return {len:pathLen(pts),cx:bb.minx+bb.w/2,cy:bb.miny+bb.h/2,curl:curliness(pts),bb}; }
+
+// ---- eine kurze Graphit-Marke (das Grizzel) zwischen zwei Punkten ----
+function stroke(x0,y0,x1,y1,w,tone,alpha){ const col=tone?'62,58,68':'44,41,44';
+  ctx.lineCap='round'; ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1);
+  ctx.strokeStyle='rgba('+col+','+alpha+')'; ctx.lineWidth=Math.max(0.4,w); ctx.stroke(); }
+
+// ein Wachstums-Segment: koerniges Buendel aus mehreren Strichen, dazu ab und zu ein Querstrich (Schraffur)
+function branchSeg(x0,y0,x1,y1,w,dir,tone){
+  const passes=2+(w>2.4?1:0);
+  for(let p=0;p<passes;p++){ const jx=(Math.random()-0.5)*w*0.7, jy=(Math.random()-0.5)*w*0.7;
+    stroke(x0+jx,y0+jy,x1+jx,y1+jy, w*thick*(0.45+Math.random()*0.6), tone, 0.09+Math.random()*0.10); }
+  if(w>1.6 && Math.random()<0.55){ const nx=-Math.sin(dir), ny=Math.cos(dir), s=(Math.random()<0.5?1:-1), l=w*(0.9+Math.random()*1.1);
+    const mx=(x0+x1)/2, my=(y0+y1)/2; stroke(mx,my, mx+nx*s*l, my+ny*s*l, thick*0.8, tone, 0.05+Math.random()*0.06); } }
+
+// ---- ein Wachstums-Schritt fuer eine Spitze ----
+function stepTip(tp, out){
+  const speed=(0.5+2.2*life)*(0.55+tp.width/tp.w0*0.5);
+  const px=tp.x, py=tp.y;
+  tp.dir += (noise2(tp.x*0.006+tp.seed, tp.y*0.006-tp.seed)*1.7 + (Math.random()-0.5)*0.35)*(0.5+wild);
+  tp.x += Math.cos(tp.dir)*speed; tp.y += Math.sin(tp.dir)*speed;
+  tp.width *= 0.986; tp.energy -= 1;
+  branchSeg(px,py,tp.x,tp.y, tp.width, tp.dir, tp.tone);
+  const cap = tips.length+out.length < TIPCAP;
+  if(cap && tp.width>1.1 && tp.energy>6 && Math.random() < (0.012+0.055*wild)){
+    out.push({ x:tp.x, y:tp.y, dir:tp.dir+(Math.random()<0.5?1:-1)*(0.35+Math.random()*0.6),
+      width:tp.width*0.72, w0:tp.width*0.72, energy:tp.energy*0.62, tone:tp.tone, seed:tp.seed+Math.random() });
+    tp.dir += (Math.random()-0.5)*0.25; tp.width*=0.9;
+  }
+  return tp.energy>0 && tp.width>0.35 && tp.x>-30 && tp.x<W+30 && tp.y>-30 && tp.y<H+30;
+}
+
+// ---- aus einer Geste Wachstums-Spitzen saeen ----
+function angleAt(sp,i){ const a=sp[Math.max(0,i-1)], b=sp[Math.min(sp.length-1,i+1)]; return Math.atan2(b.y-a.y,b.x-a.x); }
+function addTip(p,dir,tone,seed,wmul){ const w=(3.4+Math.random()*2.2)*wmul; tips.push({x:p.x,y:p.y,dir,tone,seed,width:w,w0:w,energy:80+Math.random()*90}); }
+function seedGrowth(pts, tone){
+  if(pts.length<2) return; const L=pathLen(pts), n=Math.max(5,Math.min(28,Math.floor(L/18)));
+  const sp=resample(pts,n), seed=Math.random()*1000;
+  addTip(sp[n-1], angleAt(sp,n-1), tone, seed, 1.0);            // aus dem Ende weiter wachsen
+  addTip(sp[0], angleAt(sp,0)+Math.PI, tone, seed+9, 0.9);      // aus dem Anfang zurueck wachsen
+  const off=1+Math.floor(L/140);                                // ein paar Abzweige seitlich
+  for(let k=0;k<off;k++){ const i=1+Math.floor(Math.random()*(n-2)), side=Math.random()<0.5?1:-1;
+    addTip(sp[i], angleAt(sp,i)+side*(Math.PI/2)+(Math.random()-0.5)*0.7, tone, seed+k*3, 0.75); }
+}
+
+// ---- unvorhersehbare KI-Antwort: erzeugt einen Antwort-Pfad und laesst ihn eigenstaendig wachsen ----
+function makeAIAnswer(srcPts){ const g=analyze(srcPts), strat=Math.floor(Math.random()*4); let pts;
+  if(strat===0){ const n=srcPts.length, start=srcPts[n-1]; let dx=srcPts[n-1].x-srcPts[0].x, dy=srcPts[n-1].y-srcPts[0].y; const dl=Math.hypot(dx,dy)||1;
+    let a=Math.atan2(dy/dl,dx/dl)+Math.PI+(Math.random()-0.5)*1.2; const steps=14, seg=g.len*(0.5+Math.random()*0.6)/steps; let x=start.x,y=start.y; pts=[start];
+    for(let i=0;i<steps;i++){ a+=(Math.random()-0.5)*0.5; x+=Math.cos(a)*seg; y+=Math.sin(a)*seg; pts.push({x,y}); }
+  } else if(strat===1){ const cx=g.cx,cy=g.cy,ang=(Math.random()-0.5)*2.2,sc=0.6+Math.random()*0.9,flip=Math.random()<0.5?-1:1;
+    const co=Math.cos(ang),si=Math.sin(ang),tx=(Math.random()-0.5)*W*0.35,ty=(Math.random()-0.5)*H*0.35;
+    pts=srcPts.map(p=>{ let x=(p.x-cx)*flip,y=(p.y-cy); return {x:cx+(x*co-y*si)*sc+tx,y:cy+(x*si+y*co)*sc+ty}; });
+  } else if(strat===2){ const n=srcPts.length, a0=Math.floor(Math.random()*n*0.4), b0=Math.min(n,a0+Math.floor(n*(0.3+Math.random()*0.4)));
+    pts=srcPts.slice(a0,b0); if(pts.length<2) pts=srcPts.slice();
+  } else { const start={x:g.cx+(Math.random()-0.5)*W*0.3,y:g.cy+(Math.random()-0.5)*H*0.3}; const steps=12+Math.floor(Math.random()*8), seg=Math.max(9,g.len/steps), wig=0.3+g.curl/steps;
+    let a=Math.random()*6.28,x=start.x,y=start.y; pts=[start]; for(let i=0;i<steps;i++){ a+=(Math.random()-0.5)*wig*2; x+=Math.cos(a)*seg; y+=Math.sin(a)*seg; pts.push({x,y}); } }
+  pts=clampPath(jitterPath(pts,4+Math.random()*6));
+  setTimeout(()=>seedGrowth(pts,1), 150+Math.random()*450); }
+
+// ---- Hauptschleife: nur die Spitzen wachsen weiter, das Gewachsene bleibt stehen ----
+const statusEl=document.getElementById('status');
+function loop(now){ const dt=now-lastT; lastT=now; if(power) clock+=dt;
+  if(power && tips.length){ const snap=tips; tips=[]; const out=[];
+    for(const tp of snap){ if(stepTip(tp,out)) tips.push(tp); }
+    for(const c of out) tips.push(c); }
+  statusEl.textContent = tips.length ? ('wächst  ('+tips.length+')') : 'ruht';
+  requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+// ---- Eingabe: die Geste wird direkt als Bleistift gezeichnet und bleibt ----
+let pressing=false; const hint=document.getElementById('hint');
+cv.addEventListener('pointerdown',e=>{ pressing=true; cv.setPointerCapture(e.pointerId);
+  current=[{x:e.clientX,y:e.clientY}]; lastPt={x:e.clientX,y:e.clientY}; hint.classList.add('gone'); });
+cv.addEventListener('pointermove',e=>{ if(!pressing) return; const dx=e.clientX-lastPt.x, dy=e.clientY-lastPt.y;
+  if(dx*dx+dy*dy>9){ const dir=Math.atan2(dy,dx); branchSeg(lastPt.x,lastPt.y,e.clientX,e.clientY,3.0,dir,0);
+    lastPt={x:e.clientX,y:e.clientY}; current.push(lastPt); } });
+function endStroke(){ if(!pressing) return; pressing=false;
+  if(current&&current.length>1){ seedGrowth(current,0); if(duett) makeAIAnswer(current.slice()); } current=null; }
+cv.addEventListener('pointerup',endStroke); cv.addEventListener('pointercancel',endStroke);
+
+// ---- Bedienung ----
+const btnDuett=document.getElementById('btnDuett'),btnPlug=document.getElementById('btnPlug'),
+  slLife=document.getElementById('slLife'),slWild=document.getElementById('slWild'),slThick=document.getElementById('slThick');
+btnDuett.onclick=()=>{ duett=!duett; btnDuett.textContent='Duett: '+(duett?'an':'aus'); btnDuett.classList.toggle('on',duett); };
+slLife.oninput=()=>{ life=slLife.value/100; };
+slWild.oninput=()=>{ wild=slWild.value/100; };
+slThick.oninput=()=>{ thick=slThick.value/100; };
+btnPlug.onclick=()=>{ power=!power; btnPlug.textContent=power?'Stecker ziehen':'Stecker rein'; document.body.style.filter=power?'none':'contrast(.92) brightness(.98)'; };
+document.getElementById('btnClear').onclick=()=>{ tips=[]; current=null; paintPaper(); };
+document.getElementById('btnFull').onclick=()=>{ if(!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); };
+</script>
+</body>
+</html>

@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>KAPmodern Prototyp v2: Bleistift wird lebendig</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; background:#ece5d8; }
+  #c { display:block; position:fixed; inset:0; touch-action:none; cursor:crosshair; }
+  /* feines Papierkorn ueber allem */
+  #grain { position:fixed; inset:0; pointer-events:none; opacity:.05; z-index:2;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+  #hint { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    color:rgba(40,38,44,.5); font-size:22px; letter-spacing:.3px; pointer-events:none;
+    transition:opacity .8s ease; text-align:center; z-index:3; }
+  #hint.gone { opacity:0; }
+  #ui { position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    display:flex; gap:8px; align-items:center; padding:8px 10px; z-index:5;
+    background:rgba(240,236,226,.82); border:1px solid rgba(40,38,44,.16);
+    border-radius:14px; backdrop-filter:blur(6px); flex-wrap:wrap; justify-content:center; max-width:94vw; }
+  #ui button, #ui .lbl { color:#2a282e; background:rgba(40,38,44,.05);
+    border:1px solid rgba(40,38,44,.18); border-radius:9px; padding:8px 12px;
+    font-size:13px; cursor:pointer; transition:background .15s, border-color .15s; user-select:none; }
+  #ui button:hover { background:rgba(40,38,44,.12); }
+  #ui button.on { background:rgba(40,38,44,.16); border-color:rgba(40,38,44,.5); }
+  #ui button.danger { background:rgba(150,40,40,.12); border-color:rgba(150,40,40,.4); color:#7a1f1f; }
+  #ui .lbl { cursor:default; display:flex; align-items:center; gap:8px; }
+  #ui input[type=range] { width:120px; accent-color:#3a3740; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="grain"></div>
+<div id="hint">Zeichne eine Skizze. Dann lass los, und sie erwacht.</div>
+<div id="ui">
+  <button id="btnDuett" class="on">Duett: an</button>
+  <div class="lbl">Leben <input id="slEnergy" type="range" min="0" max="100" value="22"></div>
+  <button id="btnLehrling">Lehrling loslassen</button>
+  <button id="btnPlug" class="danger">Stecker ziehen</button>
+  <button id="btnClear">Leeren</button>
+  <button id="btnFull">Vollbild</button>
+</div>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H, DPR;
+const PAPER = [236, 229, 216];
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = W*DPR; cv.height = H*DPR;
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.fillStyle = 'rgb('+PAPER[0]+','+PAPER[1]+','+PAPER[2]+')';
+  ctx.fillRect(0,0,W,H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---- Zustand ----
+let strokes = [];      // lebendige Skizzen
+let current = null;    // gerade gezeichnet
+let energy = 0.22;     // 0..1: wie lebendig, wie schnell iteriert es
+let energyTarget = 0.22;
+let lehrling = false;
+let duett = true;
+let power = true;
+let clock = 0;
+let lastT = performance.now();
+const MAXSTROKES = 90;
+
+// kleine deterministische Pseudozufallsfunktion fuer ruhiges Bleistift-Zittern
+function n1(x){ const s = Math.sin(x*127.1)*43758.5453; return (s - Math.floor(s)) - 0.5; }
+
+// ---- Skizze anlegen ----
+function addStroke(pts, opts){
+  opts = opts || {};
+  const s = {
+    pts: pts,
+    origin: pts.map(p => ({x:p.x, y:p.y})),   // die "Originalgeste" bleibt schwach sichtbar
+    phase: Math.random()*100,
+    seed: Math.random()*1000,
+    tone: opts.tone !== undefined ? opts.tone : 0,   // 0 warm (Mensch), 1 kuehl (Maschine)
+    baseW: opts.baseW || (1.6 + Math.random()*0.8),
+    generation: 0,
+    nextIter: clock + iterInterval(),
+    reveal: opts.reveal ? { start: clock, dur: opts.revealDur || 650 } : null,
+    isLimb: !!opts.isLimb
+  };
+  strokes.push(s);
+  while (strokes.length > MAXSTROKES) strokes.shift();
+  return s;
+}
+function iterInterval(){ return 1700 - energy*1250; }   // hohe Energie = schnelleres Iterieren
+
+// ---- KI-Antwort: durch die Mitte gespiegelt, leicht gedreht ----
+function makeAIAnswer(src){
+  const cx = W/2, cy = H/2;
+  const rot = (Math.random()-0.5)*0.5, sc = 0.9 + Math.random()*0.3;
+  const cos = Math.cos(rot), sin = Math.sin(rot);
+  const pts = src.pts.map(p => {
+    let x = -(p.x-cx), y = -(p.y-cy);
+    return { x: cx + (x*cos - y*sin)*sc, y: cy + (x*sin + y*cos)*sc };
+  });
+  setTimeout(() => addStroke(pts, { tone:1, reveal:true, revealDur:700 }), 200);
+}
+
+// ---- Iteration: die Skizze zeichnet sich leicht veraendert neu, driftet, treibt Glieder aus ----
+function iterate(s){
+  const drift = 1.4 + energy*6;
+  s.pts = s.pts.map((p,i) => ({
+    x: p.x + n1(s.seed + i*3.1 + s.generation*7)*drift,
+    y: p.y + n1(s.seed + i*3.1 + s.generation*7 + 99)*drift
+  }));
+  s.generation++;
+  // ab hoher Energie waechst aus einem Punkt ein kurzer Ast: Richtung figuerlich
+  if (!s.isLimb && energy > 0.6 && strokes.length < MAXSTROKES && Math.random() < (energy-0.55)*0.9){
+    const i = 1 + Math.floor(Math.random()*(s.pts.length-2));
+    const a = s.pts[Math.max(0,i-1)], b = s.pts[Math.min(s.pts.length-1,i+1)];
+    let tx = b.x-a.x, ty = b.y-a.y; const tl = Math.hypot(tx,ty)||1;
+    const nx = -ty/tl, ny = tx/tl, dir = Math.random()<0.5?1:-1;
+    const len = 20 + Math.random()*40, seg = 3 + Math.floor(Math.random()*3);
+    const limb = [];
+    for (let k=0;k<=seg;k++){
+      const f = k/seg;
+      limb.push({ x: s.pts[i].x + nx*dir*len*f + n1(k+s.seed)*8,
+                  y: s.pts[i].y + ny*dir*len*f + n1(k+s.seed+7)*8 });
+    }
+    addStroke(limb, { tone:s.tone, isLimb:true, reveal:true, revealDur:450, baseW:s.baseW*0.85 });
+  }
+}
+
+// ---- Bewegung: kleine, atmende Auslenkung senkrecht zur Linie ----
+function displaced(s){
+  const pts = s.pts, m = pts.length, out = [];
+  const t = clock*0.001;
+  const amp = 1.2 + energy*9;
+  for (let i=0;i<m;i++){
+    const p = pts[i];
+    const a = pts[Math.max(0,i-1)], b = pts[Math.min(m-1,i+1)];
+    let tx = b.x-a.x, ty = b.y-a.y; const tl = Math.hypot(tx,ty)||1;
+    const nx = -ty/tl, ny = tx/tl;
+    const w = amp*( Math.sin(t*1.1 + i*0.3 + s.phase) + 0.4*Math.sin(t*1.9 - i*0.16 + s.seed) );
+    out.push({ x: p.x + nx*w, y: p.y + ny*w });
+  }
+  return out;
+}
+
+// ---- Bleistift zeichnen: mehrere leicht versetzte, halbtransparente Striche ----
+function pencil(pts, alpha, width, tone, passes){
+  if (pts.length < 2) return;
+  const r = tone ? 40 : 46, g = tone ? 44 : 40, b = tone ? 58 : 40;   // Maschine leicht kuehler
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (let pass=0; pass<passes; pass++){
+    const jt = (pass - (passes-1)/2) * 0.9;
+    ctx.beginPath();
+    for (let i=0;i<pts.length;i++){
+      const sh = 0.8 + Math.sin(clock*0.02 + i + pass*13)*0.2;   // leichtes Graphit-Zittern
+      const x = pts[i].x + jt*sh, y = pts[i].y + jt*0.6;
+      if (i===0) ctx.moveTo(x,y);
+      else {
+        const mx = (pts[i-1].x + pts[i].x)/2 + jt*sh, my = (pts[i-1].y + pts[i].y)/2 + jt*0.6;
+        ctx.quadraticCurveTo(pts[i-1].x + jt*sh, pts[i-1].y + jt*0.6, mx, my);
+      }
+    }
+    ctx.strokeStyle = 'rgba('+r+','+g+','+b+','+(alpha*0.5)+')';
+    ctx.lineWidth = width*(0.8 + pass*0.15);
+    ctx.stroke();
+  }
+}
+
+// ---- Hauptschleife ----
+function loop(now){
+  const dt = now - lastT; lastT = now;
+  if (power) clock += dt;
+  if (lehrling) energyTarget = Math.min(1, energyTarget + dt*0.00003);
+  energy += (energyTarget - energy)*0.02;
+
+  // ganz leichtes Aufhellen Richtung Papier: Graphit bleibt lange stehen und verblasst dann
+  ctx.fillStyle = 'rgba('+PAPER[0]+','+PAPER[1]+','+PAPER[2]+','+(power?0.028:0.012)+')';
+  ctx.fillRect(0,0,W,H);
+
+  for (const s of strokes){
+    // Iterationstakt: alte Lage als blasser Geist stehen lassen, dann neu zeichnen
+    if (power && clock > s.nextIter){
+      pencil(displaced(s), 0.18, s.baseW, s.tone, 1);   // Geist der letzten Generation
+      iterate(s);
+      s.nextIter = clock + iterInterval();
+    }
+    // Originalgeste ganz schwach: Original gegen Iteration
+    pencil(s.origin, 0.06, s.baseW, s.tone, 1);
+
+    let arr = displaced(s);
+    if (s.reveal){
+      const p = Math.min(1, (clock - s.reveal.start)/s.reveal.dur);
+      arr = arr.slice(0, Math.max(2, Math.floor(p*arr.length)));
+      if (p >= 1) s.reveal = null;
+    }
+    const alpha = s.isLimb ? 0.5 : (s.tone ? 0.6 : 0.72);
+    pencil(arr, alpha, s.baseW*(1+energy*0.5), s.tone, 3);
+  }
+
+  if (current && current.pts.length > 1) pencil(current.pts, 0.8, 1.7, 0, 3);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- Eingabe (Maus, Finger, Stift) ----
+let pressing = false;
+const hint = document.getElementById('hint');
+cv.addEventListener('pointerdown', e => {
+  pressing = true; cv.setPointerCapture(e.pointerId);
+  current = { pts: [{x:e.clientX, y:e.clientY}] };
+  hint.classList.add('gone');
+});
+cv.addEventListener('pointermove', e => {
+  if (!pressing || !current) return;
+  const last = current.pts[current.pts.length-1];
+  const dx = e.clientX-last.x, dy = e.clientY-last.y;
+  if (dx*dx + dy*dy > 24) current.pts.push({x:e.clientX, y:e.clientY});
+});
+function endStroke(){
+  if (!pressing) return; pressing = false;
+  if (current && current.pts.length > 1){
+    const s = addStroke(current.pts.slice(), { tone:0 });
+    if (duett) makeAIAnswer(s);
+  }
+  current = null;
+}
+cv.addEventListener('pointerup', endStroke);
+cv.addEventListener('pointercancel', endStroke);
+
+// ---- Bedienung ----
+const btnDuett = document.getElementById('btnDuett');
+const btnLehrling = document.getElementById('btnLehrling');
+const btnPlug = document.getElementById('btnPlug');
+const slEnergy = document.getElementById('slEnergy');
+btnDuett.onclick = () => { duett = !duett;
+  btnDuett.textContent = 'Duett: ' + (duett?'an':'aus'); btnDuett.classList.toggle('on', duett); };
+slEnergy.oninput = () => { lehrling = false; btnLehrling.classList.remove('on'); energyTarget = slEnergy.value/100; };
+btnLehrling.onclick = () => { lehrling = !lehrling; btnLehrling.classList.toggle('on', lehrling); };
+btnPlug.onclick = () => { power = !power;
+  btnPlug.textContent = power?'Stecker ziehen':'Stecker rein';
+  document.body.style.filter = power?'none':'contrast(.9) brightness(.97)'; };
+document.getElementById('btnClear').onclick = () => { strokes=[]; current=null;
+  ctx.fillStyle = 'rgb('+PAPER[0]+','+PAPER[1]+','+PAPER[2]+')'; ctx.fillRect(0,0,W,H); };
+document.getElementById('btnFull').onclick = () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); };
+setInterval(() => { if (lehrling) slEnergy.value = Math.round(energyTarget*100); }, 200);
+</script>
+</body>
+</html>

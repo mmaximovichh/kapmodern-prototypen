@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KAPmodern Studio: Prototypen</title>
+<style>
+  :root{ --paper:#ece5d8; --ink:#2c292c; --line:rgba(44,41,44,.14); }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:var(--paper); color:var(--ink);
+    font-family:-apple-system,"Helvetica Neue",Arial,sans-serif; }
+  #app{ display:flex; height:100vh; }
+  /* Sidebar */
+  #side{ width:290px; flex:0 0 290px; border-right:1px solid var(--line); height:100%; overflow-y:auto;
+    background:rgba(255,255,255,.28); backdrop-filter:blur(4px); }
+  #side .head{ padding:20px 18px 12px; }
+  #side h1{ font-size:17px; font-weight:600; margin:0 0 3px; letter-spacing:.3px; }
+  #side .subtitle{ font-size:12px; color:#6a655e; line-height:1.45; }
+  .group{ font-size:11px; letter-spacing:1.3px; text-transform:uppercase; color:#8a847b;
+    padding:16px 18px 6px; }
+  .item{ display:block; width:100%; text-align:left; border:0; background:transparent; cursor:pointer;
+    padding:10px 18px; border-left:3px solid transparent; color:inherit; }
+  .item:hover{ background:rgba(44,41,44,.05); }
+  .item.on{ background:rgba(44,41,44,.09); border-left-color:var(--ink); }
+  .item .t{ font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px; }
+  .item .t .n{ font-size:11px; color:#8a847b; font-weight:600; min-width:20px; }
+  .item.on .t .n{ color:var(--ink); }
+  .item .d{ font-size:12px; color:#6a655e; line-height:1.4; margin:3px 0 0 28px; }
+  .item .badge{ margin-left:auto; font-size:10px; letter-spacing:.5px; background:var(--ink); color:var(--paper);
+    border-radius:5px; padding:1px 6px; }
+  #foot{ padding:14px 18px 22px; font-size:11px; color:#8a847b; line-height:1.5; }
+  /* Main */
+  #main{ flex:1; display:flex; flex-direction:column; height:100%; }
+  #topbar{ height:46px; flex:0 0 46px; display:flex; align-items:center; gap:10px; padding:0 14px;
+    border-bottom:1px solid var(--line); }
+  #topbar .name{ font-size:13px; font-weight:600; }
+  #topbar .spacer{ flex:1; }
+  #topbar a, #topbar button{ font-size:12px; color:var(--ink); text-decoration:none; cursor:pointer;
+    background:rgba(44,41,44,.06); border:1px solid var(--line); border-radius:8px; padding:6px 11px; }
+  #topbar a:hover, #topbar button:hover{ background:rgba(44,41,44,.13); }
+  #stage{ flex:1; position:relative; background:var(--paper); }
+  iframe{ position:absolute; inset:0; width:100%; height:100%; border:0; background:var(--paper); }
+  @media(max-width:720px){ #side{ width:210px; flex-basis:210px; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <nav id="side">
+    <div class="head">
+      <h1>KAPmodern Studio</h1>
+      <div class="subtitle">Aus dem Bleistiftstrich erwacht etwas. Alle Prototypen an einem Ort, zum Durchklicken.</div>
+    </div>
+    <div id="list"></div>
+    <div id="foot">Alles laeuft prozedural im Browser, noch keine echte generative KI. Mit den Pfeiltasten hoch und runter blaetterst du durch.</div>
+  </nav>
+  <div id="main">
+    <div id="topbar">
+      <span class="name" id="curName"></span>
+      <span class="spacer"></span>
+      <button id="btnReload">neu laden</button>
+      <button id="btnFs">Vollbild</button>
+      <a id="btnTab" target="_blank">im eigenen Tab</a>
+    </div>
+    <div id="stage"><iframe id="frame" allow="fullscreen" allowfullscreen></iframe></div>
+  </div>
+</div>
+<script>
+  const ITEMS=[
+    {g:'Instrument (aktuell)', n:'v8', title:'Instrument', badge:'aktuell', file:'v8_instrument.html',
+      d:'Werkzeug-Set zum Live-Spielen: Bleistift, Wachsen, Echo, Wischen, Radierer. Regler Erwachen laesst das Bild lebendig werden.'},
+    {g:'Team, vier Richtungen (v7)', n:'v7', title:'Stroemung', file:'team/v7_stroemung.html',
+      d:'Der Strich zerfaellt in Graphit-Staub und stroemt wie Tusche in Wasser.'},
+    {g:'Team, vier Richtungen (v7)', n:'v7', title:'Trickfilm', file:'team/v7_trickfilm.html',
+      d:'Kochende Linie, ein Wesen erwacht und bewegt sich wie ein handgezeichneter Bleistift-Test.'},
+    {g:'Team, vier Richtungen (v7)', n:'v7', title:'Schwarm', file:'team/v7_schwarm.html',
+      d:'Ein Graphit-Schwarm haelt die Form, bricht aus und findet wieder zusammen.'},
+    {g:'Team, vier Richtungen (v7)', n:'v7', title:'Morphogenese', file:'team/v7_morphogenese.html',
+      d:'Die Linie faltet und wuchert wie Hirnkoralle, differenzielles Wachstum.'},
+    {g:'Fruehe Versionen', n:'v6', title:'Wachstum', file:'prototyp_v6_wachstum.html',
+      d:'Aus der Geste wachsen verzweigte Graphit-Straenge, wie Wurzeln.'},
+    {g:'Fruehe Versionen', n:'v5', title:'Schraffiert', file:'prototyp_v5.html',
+      d:'Das Bild wird fortlaufend aus kurzen Graphit-Strichen schraffiert.'},
+    {g:'Fruehe Versionen', n:'v4', title:'Interpretierte Figur', file:'prototyp_v4.html',
+      d:'Das System liest die Geste, variable Strichdicke, unvorhersehbares Duett.'},
+    {g:'Fruehe Versionen', n:'v3', title:'Entwicklung', file:'prototyp_v3_entwicklung.html',
+      d:'Bogen von Suchen ueber Formfindung bis Erwachen, zum Zuschauen.'},
+    {g:'Fruehe Versionen', n:'v2', title:'Bleistift, Iteration', file:'prototyp_v2_bleistift.html',
+      d:'Graphit auf Papier, die Skizze zeichnet sich immer wieder neu.'},
+    {g:'Fruehe Versionen', n:'v1', title:'Neon, Duett', file:'prototyp.html',
+      d:'Der erste Wurf: leuchtende Striche, Duett, Zauberlehrling, Stecker ziehen.'}
+  ];
+  const listEl=document.getElementById('list'), frame=document.getElementById('frame'),
+        curName=document.getElementById('curName'), btnTab=document.getElementById('btnTab');
+  let cur=0, lastGroup=null;
+  ITEMS.forEach((it,i)=>{
+    if(it.g!==lastGroup){ const g=document.createElement('div'); g.className='group'; g.textContent=it.g; listEl.appendChild(g); lastGroup=it.g; }
+    const b=document.createElement('button'); b.className='item'; b.dataset.i=i;
+    b.innerHTML='<div class="t"><span class="n">'+it.n+'</span><span>'+it.title+'</span>'+(it.badge?'<span class="badge">'+it.badge+'</span>':'')+'</div><div class="d">'+it.d+'</div>';
+    b.onclick=()=>select(i); listEl.appendChild(b);
+  });
+  function select(i){ cur=i; const it=ITEMS[i];
+    if(frame.src.indexOf(it.file)===-1 || true) frame.src=it.file;
+    curName.textContent=it.n+'  '+it.title; btnTab.href=it.file;
+    [...document.querySelectorAll('.item')].forEach(el=>el.classList.toggle('on', +el.dataset.i===i));
+    const active=document.querySelector('.item.on'); if(active) active.scrollIntoView({block:'nearest'});
+  }
+  document.getElementById('btnReload').onclick=()=>{ frame.src=ITEMS[cur].file; };
+  document.getElementById('btnFs').onclick=()=>{ const s=document.getElementById('stage'); if(!document.fullscreenElement) (frame.requestFullscreen?frame:s).requestFullscreen(); else document.exitFullscreen(); };
+  window.addEventListener('keydown', e=>{ if(e.key==='ArrowDown'){ e.preventDefault(); select(Math.min(ITEMS.length-1,cur+1)); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); select(Math.max(0,cur-1)); } });
+  select(0);
+</script>
+</body>
+</html>

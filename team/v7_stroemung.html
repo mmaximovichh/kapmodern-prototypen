@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Strömung, Graphit im Wasser</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: rgb(236, 229, 216);
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  }
+  #canvas {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #hint {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(44, 41, 44, 0.42);
+    font-size: 17px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    text-align: center;
+    pointer-events: none;
+    transition: opacity 1.4s ease;
+    line-height: 1.6;
+  }
+  #hint.hidden { opacity: 0; }
+
+  #bar {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: rgba(236, 229, 216, 0.72);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: 22px;
+    box-shadow: 0 4px 22px rgba(44, 41, 44, 0.12);
+    border: 1px solid rgba(44, 41, 44, 0.08);
+    max-width: calc(100vw - 24px);
+    box-sizing: border-box;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .ctrl {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  .ctrl label {
+    font-size: 10.5px;
+    color: rgba(44, 41, 44, 0.66);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 118px;
+    height: 3px;
+    border-radius: 3px;
+    background: rgba(44, 41, 44, 0.22);
+    outline: none;
+    margin: 6px 0;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: rgb(44, 41, 44);
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: rgb(44, 41, 44);
+    border: none;
+    cursor: pointer;
+  }
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    color: rgb(44, 41, 44);
+    background: rgba(44, 41, 44, 0.06);
+    border: 1px solid rgba(44, 41, 44, 0.14);
+    border-radius: 14px;
+    padding: 8px 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, transform 0.08s ease;
+  }
+  button:hover { background: rgba(44, 41, 44, 0.12); }
+  button:active { transform: scale(0.96); }
+  button.on {
+    background: rgba(44, 41, 44, 0.82);
+    color: rgb(236, 229, 216);
+    border-color: rgba(44, 41, 44, 0.82);
+  }
+  .sep {
+    width: 1px;
+    height: 30px;
+    background: rgba(44, 41, 44, 0.12);
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="hint">Zeichne einen Strich.<br>Er beginnt zu atmen und zu fließen.</div>
+
+<div id="bar">
+  <div class="ctrl">
+    <label>Strömung</label>
+    <input type="range" id="flow" min="0" max="100" value="42">
+  </div>
+  <div class="ctrl">
+    <label>Dichte</label>
+    <input type="range" id="density" min="0" max="100" value="55">
+  </div>
+  <div class="sep"></div>
+  <button id="plug">Stecker ziehen</button>
+  <button id="clear">Leeren</button>
+  <button id="full">Vollbild</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("canvas");
+  var ctx = canvas.getContext("2d", { alpha: false });
+  var hint = document.getElementById("hint");
+  var flowEl = document.getElementById("flow");
+  var densityEl = document.getElementById("density");
+  var plugBtn = document.getElementById("plug");
+  var clearBtn = document.getElementById("clear");
+  var fullBtn = document.getElementById("full");
+
+  var PAPER = "rgb(236, 229, 216)";
+  var PAPER_R = 236, PAPER_G = 229, PAPER_B = 216;
+  var GRAPH_R = 44, GRAPH_G = 41, GRAPH_B = 44;
+
+  var W = 0, H = 0, dpr = 1;
+  var MAX_PARTICLES = 4000;
+
+  // ---------------------------------------------------------------
+  // Sizing (devicePixelRatio aware, capped for performance)
+  // ---------------------------------------------------------------
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.floor(window.innerWidth);
+    H = Math.floor(window.innerHeight);
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // repaint background so the fade-trails have a clean base
+    ctx.fillStyle = PAPER;
+    ctx.fillRect(0, 0, W, H);
+    drawGrain();
+  }
+
+  // Subtle paper grain, drawn once onto the base after clears
+  function drawGrain() {
+    var count = Math.floor((W * H) / 1400);
+    ctx.save();
+    for (var i = 0; i < count; i++) {
+      var x = Math.random() * W;
+      var y = Math.random() * H;
+      var a = Math.random() * 0.03;
+      // mix a touch darker and a touch lighter for tooth
+      if (Math.random() < 0.5) {
+        ctx.fillStyle = "rgba(44,41,44," + a.toFixed(3) + ")";
+      } else {
+        ctx.fillStyle = "rgba(255,255,255," + (a * 1.4).toFixed(3) + ")";
+      }
+      ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------
+  // Pseudo curl-noise flow field
+  // Value noise with hashed gradients, curl of a scalar potential.
+  // Deterministic, cheap, no libraries.
+  // ---------------------------------------------------------------
+  var perm = new Uint8Array(512);
+  (function seedPerm() {
+    var p = new Uint8Array(256);
+    for (var i = 0; i < 256; i++) p[i] = i;
+    // simple deterministic shuffle
+    var s = 1337;
+    for (var j = 255; j > 0; j--) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      var k = s % (j + 1);
+      var t = p[j]; p[j] = p[k]; p[k] = t;
+    }
+    for (var m = 0; m < 512; m++) perm[m] = p[m & 255];
+  })();
+
+  function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  function lerp(a, b, t) { return a + t * (b - a); }
+  function grad(h, x, y) {
+    // 8 directions
+    switch (h & 7) {
+      case 0: return  x + y;
+      case 1: return  x - y;
+      case 2: return -x + y;
+      case 3: return -x - y;
+      case 4: return  x;
+      case 5: return -x;
+      case 6: return  y;
+      default: return -y;
+    }
+  }
+  function noise2(x, y) {
+    var X = Math.floor(x) & 255;
+    var Y = Math.floor(y) & 255;
+    var xf = x - Math.floor(x);
+    var yf = y - Math.floor(y);
+    var u = fade(xf), v = fade(yf);
+    var aa = perm[perm[X] + Y];
+    var ab = perm[perm[X] + Y + 1];
+    var ba = perm[perm[X + 1] + Y];
+    var bb = perm[perm[X + 1] + Y + 1];
+    var x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u);
+    var x2 = lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u);
+    return lerp(x1, x2, v); // roughly in [-1, 1]
+  }
+
+  // Scalar potential field; curl gives a divergence-free (incompressible) flow
+  var NOISE_SCALE = 0.0016;   // spatial frequency of the field
+  var TIME_SCALE = 0.00006;   // how fast the field itself evolves
+  var timePhase = 0;
+
+  function potential(x, y) {
+    // layered value noise for a richer, flowing potential
+    var n = 0;
+    n += noise2(x * NOISE_SCALE + timePhase, y * NOISE_SCALE);
+    n += 0.5 * noise2(x * NOISE_SCALE * 2.1 - timePhase * 1.3, y * NOISE_SCALE * 2.1 + 40.0);
+    n += 0.25 * noise2(x * NOISE_SCALE * 4.3, y * NOISE_SCALE * 4.3 - timePhase * 0.7 + 90.0);
+    return n;
+  }
+
+  // Curl of the scalar potential: v = ( dP/dy , -dP/dx )
+  var EPS = 1.0;
+  function fieldAt(x, y, out) {
+    var p1 = potential(x, y + EPS);
+    var p2 = potential(x, y - EPS);
+    var p3 = potential(x + EPS, y);
+    var p4 = potential(x - EPS, y);
+    var dx = (p1 - p2) / (2 * EPS);
+    var dy = (p3 - p4) / (2 * EPS);
+    out.x = dx;
+    out.y = -dy;
+  }
+
+  // ---------------------------------------------------------------
+  // Particles: graphite dust carried by the flow, each remembers a
+  // home point along the drawn stroke so the drawing slowly reforms.
+  // ---------------------------------------------------------------
+  function Particle() {
+    this.x = 0; this.y = 0;
+    this.px = 0; this.py = 0;   // previous position (for trail segments)
+    this.vx = 0; this.vy = 0;
+    this.hx = 0; this.hy = 0;   // home (anchor on the drawn line)
+    this.life = 0;
+    this.tone = 0;              // base darkness
+    this.size = 1;
+    this.wander = 0;            // per-particle phase for organic variation
+    this.active = false;
+  }
+
+  var particles = [];
+  for (var i = 0; i < MAX_PARTICLES; i++) particles.push(new Particle());
+  var pool = 0; // round-robin allocation cursor
+  var activeCount = 0;
+
+  function spawn(x, y, tone) {
+    var p = particles[pool];
+    pool = (pool + 1) % MAX_PARTICLES;
+    if (!p.active) activeCount++;
+    p.active = true;
+    // slight scatter so the seed already has body, like graphite tooth
+    var a = Math.random() * Math.PI * 2;
+    var r = Math.random() * 2.4;
+    p.x = x + Math.cos(a) * r;
+    p.y = y + Math.sin(a) * r;
+    p.px = p.x;
+    p.py = p.y;
+    p.vx = 0;
+    p.vy = 0;
+    p.hx = x;
+    p.hy = y;
+    p.life = 1;
+    p.tone = 0.32 + Math.random() * 0.5;
+    p.size = 0.6 + Math.random() * 1.3;
+    p.wander = Math.random() * 1000;
+  }
+
+  // ---------------------------------------------------------------
+  // Drawing input. The stroke is the seed. We also keep a light
+  // "graphite laid down" layer feel by seeding densely along the path.
+  // ---------------------------------------------------------------
+  var drawing = false;
+  var lastX = 0, lastY = 0;
+  var started = false;
+
+  function densityFactor() {
+    // 0..100 slider -> particles laid per pixel of stroke
+    return 0.18 + (densityEl.value / 100) * 0.85;
+  }
+
+  function emitAlong(x0, y0, x1, y1) {
+    var dxp = x1 - x0, dyp = y1 - y0;
+    var dist = Math.sqrt(dxp * dxp + dyp * dyp);
+    var perPx = densityFactor();
+    var n = Math.max(1, Math.floor(dist * perPx));
+    for (var k = 0; k < n; k++) {
+      var t = n === 1 ? 0 : k / n;
+      var ux = x0 + dxp * t;
+      var uy = y0 + dyp * t;
+      spawn(ux, uy, 1);
+      // a second, fainter offset dab for graphite body
+      if (Math.random() < 0.35) {
+        spawn(ux + (Math.random() - 0.5) * 3, uy + (Math.random() - 0.5) * 3, 0.6);
+      }
+    }
+  }
+
+  function pointerPos(e) {
+    var rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function onDown(e) {
+    if (frozen) return;
+    drawing = true;
+    var pos = pointerPos(e);
+    lastX = pos.x;
+    lastY = pos.y;
+    // one seed dab immediately so a tap already blooms
+    emitAlong(pos.x, pos.y, pos.x + 0.01, pos.y + 0.01);
+    if (!started) {
+      started = true;
+      hint.classList.add("hidden");
+    }
+    canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onMove(e) {
+    if (!drawing || frozen) return;
+    // coalesced events for smoother, denser strokes on capable browsers
+    var events = (e.getCoalescedEvents && e.getCoalescedEvents()) || [e];
+    for (var i = 0; i < events.length; i++) {
+      var pos = pointerPos(events[i]);
+      emitAlong(lastX, lastY, pos.x, pos.y);
+      lastX = pos.x;
+      lastY = pos.y;
+    }
+    e.preventDefault();
+  }
+
+  function onUp(e) {
+    drawing = false;
+    e.preventDefault();
+  }
+
+  canvas.addEventListener("pointerdown", onDown, { passive: false });
+  canvas.addEventListener("pointermove", onMove, { passive: false });
+  canvas.addEventListener("pointerup", onUp, { passive: false });
+  canvas.addEventListener("pointercancel", onUp, { passive: false });
+  canvas.addEventListener("pointerleave", onUp, { passive: false });
+
+  // ---------------------------------------------------------------
+  // Awakening: freshly drawn strokes rest, then begin to breathe and
+  // flow. We track a global awakening ramp per particle via life.
+  // ---------------------------------------------------------------
+  var frozen = false;
+
+  // ---------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------
+  var fld = { x: 0, y: 0 };
+  var lastTime = performance.now();
+  var breathPhase = 0;
+
+  function flowStrength() {
+    return (flowEl.value / 100);
+  }
+
+  function step(now) {
+    var dt = now - lastTime;
+    lastTime = now;
+    if (dt > 60) dt = 60; // clamp big gaps (tab switches)
+    var dtn = dt / 16.6667; // normalized to ~60fps units
+
+    if (!frozen) {
+      timePhase += TIME_SCALE * dt;
+      breathPhase += 0.0016 * dt;
+    }
+
+    // Soft fade toward paper: gentle nachziehen for smoke-like schlieren.
+    // Very light so trails linger and the drawing holds.
+    var fade = frozen ? 0 : 0.045;
+    if (fade > 0) {
+      ctx.fillStyle = "rgba(" + PAPER_R + "," + PAPER_G + "," + PAPER_B + "," + fade + ")";
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    if (!frozen) {
+      var strength = flowStrength();
+      // overall speed of drift; kept slow and meditative
+      var driftSpeed = 0.9 + strength * 3.4;
+      // breathing modulates the flow globally so it feels alive, atmend
+      var breath = 0.72 + 0.28 * Math.sin(breathPhase);
+      var homePull = 0.006 + (1 - strength) * 0.02; // reforming tendency
+
+      ctx.globalCompositeOperation = "source-over";
+
+      var budget = 0;
+      for (var i = 0; i < MAX_PARTICLES; i++) {
+        var p = particles[i];
+        if (!p.active) continue;
+        budget++;
+
+        fieldAt(p.x, p.y, fld);
+
+        // per-particle gentle wander so motion is organic, not uniform
+        var wob = Math.sin(breathPhase * 1.3 + p.wander) * 0.15;
+
+        var fvx = (fld.x + wob) * driftSpeed * breath;
+        var fvy = (fld.y - wob) * driftSpeed * breath;
+
+        // integrate velocity with heavy damping = watery, floaty inertia
+        p.vx = p.vx * 0.92 + fvx * 0.08;
+        p.vy = p.vy * 0.92 + fvy * 0.08;
+
+        // faint pull back toward home so the drawing slowly reassembles
+        p.vx += (p.hx - p.x) * homePull;
+        p.vy += (p.hy - p.y) * homePull;
+
+        p.px = p.x;
+        p.py = p.y;
+        p.x += p.vx * dtn;
+        p.y += p.vy * dtn;
+
+        // slow aging; particles thin out but persist long, meditative
+        p.life -= 0.0011 * dtn;
+
+        if (p.life <= 0) {
+          p.active = false;
+          activeCount--;
+          continue;
+        }
+
+        // wrap softly off-screen to avoid dead clusters at edges
+        if (p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) {
+          p.life -= 0.02 * dtn;
+        }
+
+        // ---- render: a soft graphite dab + faint trail segment ----
+        var speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+        var lifeFade = p.life < 0.25 ? p.life / 0.25 : 1;
+        var alpha = p.tone * 0.10 * lifeFade;
+
+        // trail line: gives the flowing, streaked, ink-in-water look
+        var segA = alpha * Math.min(1, 0.3 + speed * 0.18);
+        if (segA > 0.004) {
+          ctx.strokeStyle = "rgba(" + GRAPH_R + "," + GRAPH_G + "," + GRAPH_B + "," + segA.toFixed(3) + ")";
+          ctx.lineWidth = p.size * 0.9;
+          ctx.beginPath();
+          ctx.moveTo(p.px, p.py);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+        }
+
+        // soft dab head, grainy graphite core
+        var dabA = alpha * 1.3;
+        ctx.fillStyle = "rgba(" + GRAPH_R + "," + GRAPH_G + "," + GRAPH_B + "," + dabA.toFixed(3) + ")";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * 0.9, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (budget >= MAX_PARTICLES) break;
+      }
+    } else {
+      // frozen: hold the image. Do nothing (no fade, no motion).
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  // ---------------------------------------------------------------
+  // Controls
+  // ---------------------------------------------------------------
+  function setFrozen(state) {
+    frozen = state;
+    if (frozen) {
+      plugBtn.textContent = "Stecker rein";
+      plugBtn.classList.add("on");
+      canvas.style.cursor = "default";
+    } else {
+      plugBtn.textContent = "Stecker ziehen";
+      plugBtn.classList.remove("on");
+      canvas.style.cursor = "crosshair";
+      lastTime = performance.now(); // avoid a big dt jump on resume
+    }
+  }
+
+  plugBtn.addEventListener("click", function () {
+    setFrozen(!frozen);
+  });
+
+  clearBtn.addEventListener("click", function () {
+    for (var i = 0; i < MAX_PARTICLES; i++) particles[i].active = false;
+    activeCount = 0;
+    ctx.fillStyle = PAPER;
+    ctx.fillRect(0, 0, W, H);
+    drawGrain();
+    if (frozen) setFrozen(false);
+    started = false;
+    hint.classList.remove("hidden");
+  });
+
+  fullBtn.addEventListener("click", function () {
+    var el = document.documentElement;
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (el.requestFullscreen) el.requestFullscreen();
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    } else {
+      if (document.exitFullscreen) document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  });
+
+  // Keep drawing intact across resize where possible: snapshot and restore
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    // snapshot current pixels
+    var snap = null;
+    try {
+      snap = document.createElement("canvas");
+      snap.width = canvas.width;
+      snap.height = canvas.height;
+      snap.getContext("2d").drawImage(canvas, 0, 0);
+    } catch (e) { snap = null; }
+
+    resize();
+
+    if (snap) {
+      // draw old image scaled to fit new size
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(snap, 0, 0, canvas.width, canvas.height);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.restore();
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------
+  resize();
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>

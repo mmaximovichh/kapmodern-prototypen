@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>KAPmodern Prototyp v3: vom Strich zur Figur</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; background:#ece5d8; }
+  #c { display:block; position:fixed; inset:0; touch-action:none; cursor:crosshair; }
+  #grain { position:fixed; inset:0; pointer-events:none; opacity:.05; z-index:2;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+  #phase { position:fixed; top:14px; left:16px; z-index:4; color:rgba(40,38,44,.62);
+    font-size:14px; letter-spacing:.4px; }
+  #hint { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    color:rgba(40,38,44,.5); font-size:22px; pointer-events:none; transition:opacity .8s ease; z-index:3; text-align:center; }
+  #hint.gone { opacity:0; }
+  #ui { position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    display:flex; gap:8px; align-items:center; padding:8px 10px; z-index:5;
+    background:rgba(240,236,226,.85); border:1px solid rgba(40,38,44,.16);
+    border-radius:14px; backdrop-filter:blur(6px); flex-wrap:wrap; justify-content:center; max-width:94vw; }
+  #ui button, #ui .lbl { color:#2a282e; background:rgba(40,38,44,.05);
+    border:1px solid rgba(40,38,44,.18); border-radius:9px; padding:8px 12px;
+    font-size:13px; cursor:pointer; transition:background .15s, border-color .15s; user-select:none; }
+  #ui button:hover { background:rgba(40,38,44,.12); }
+  #ui button.on { background:rgba(40,38,44,.16); border-color:rgba(40,38,44,.5); }
+  #ui button.danger { background:rgba(150,40,40,.12); border-color:rgba(150,40,40,.4); color:#7a1f1f; }
+  #ui .lbl { cursor:default; display:flex; align-items:center; gap:8px; }
+  #ui input[type=range] { width:150px; accent-color:#3a3740; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="grain"></div>
+<div id="phase">Phase: Suchen (0%)</div>
+<div id="hint">Zeichne eine Geste. Dann zieh die Entwicklung auf und schau zu.</div>
+<div id="ui">
+  <button id="btnDuett" class="on">Duett: an</button>
+  <div class="lbl">Entwicklung <input id="slDev" type="range" min="0" max="100" value="0"></div>
+  <button id="btnAuto">Entwicklung starten</button>
+  <button id="btnPlug" class="danger">Stecker ziehen</button>
+  <button id="btnClear">Leeren</button>
+  <button id="btnFull">Vollbild</button>
+</div>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H, DPR;
+const PAPER = [236, 229, 216];
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = W*DPR; cv.height = H*DPR;
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---- Zustand ----
+let strokes = [];
+let current = null;
+let devTarget = 0;      // 0..1 Entwicklungsgrad des ganzen Bildes
+let auto = false;       // laeuft die Entwicklung von selbst?
+let duett = true;
+let power = true;
+let clock = 0;
+let lastT = performance.now();
+const MAXSTROKES = 24;
+
+function n1(x){ const s = Math.sin(x*127.1)*43758.5453; return (s - Math.floor(s)) - 0.5; }
+function smooth(x,a,b){ const t=Math.max(0,Math.min(1,(x-a)/(b-a))); return t*t*(3-2*t); }
+
+// ---- gleichmaessig entlang der Geste abtasten, damit Kontur und Glieder stabil sitzen ----
+function resample(pts, n){
+  if (pts.length < 2) return pts.slice();
+  const d=[0];
+  for (let i=1;i<pts.length;i++) d.push(d[i-1]+Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y));
+  const total = d[d.length-1] || 1, out=[];
+  for (let k=0;k<n;k++){
+    const target = total*k/(n-1);
+    let i=1; while (i<d.length-1 && d[i]<target) i++;
+    const t=(target-d[i-1])/((d[i]-d[i-1])||1);
+    out.push({ x:pts[i-1].x+(pts[i].x-pts[i-1].x)*t, y:pts[i-1].y+(pts[i].y-pts[i-1].y)*t });
+  }
+  return out;
+}
+function normals(sp){
+  const m=sp.length, out=[];
+  for (let i=0;i<m;i++){
+    const a=sp[Math.max(0,i-1)], b=sp[Math.min(m-1,i+1)];
+    let tx=b.x-a.x, ty=b.y-a.y; const tl=Math.hypot(tx,ty)||1;
+    out.push({x:-ty/tl, y:tx/tl});
+  }
+  return out;
+}
+
+// ---- eine Geste anlegen: Rueckgrat plus verborgene Anlagen fuer Koerper, Glieder, Kopf ----
+function addStroke(pts, opts){
+  opts = opts || {};
+  const spine = resample(pts, 30);
+  const s = {
+    spine, origin: spine.map(p=>({x:p.x,y:p.y})),
+    phase: Math.random()*100, seed: Math.random()*1000,
+    tone: opts.tone || 0, dev: 0,
+    baseW: 1.5 + Math.random()*0.6,
+    bodyW: 9 + Math.random()*14,
+    headW: 7 + Math.random()*8,
+    headEnd: Math.random()<0.5 ? 0 : 1,
+    maxHatch: 20 + Math.floor(Math.random()*16),
+    limbs: []
+  };
+  const nl = 2 + Math.floor(Math.random()*3);
+  for (let k=0;k<nl;k++) s.limbs.push({
+    u: 0.2 + Math.random()*0.6, dir: Math.random()<0.5?1:-1,
+    maxLen: 22 + Math.random()*40, seg: 2 + Math.floor(Math.random()*2), seed: Math.random()*100 });
+  strokes.push(s); while (strokes.length > MAXSTROKES) strokes.shift();
+  return s;
+}
+
+function makeAIAnswer(src){
+  const cx=W/2, cy=H/2, rot=(Math.random()-0.5)*0.5, sc=0.9+Math.random()*0.3;
+  const cos=Math.cos(rot), sin=Math.sin(rot);
+  const pts = src.origin.map(p => { let x=-(p.x-cx), y=-(p.y-cy);
+    return { x: cx+(x*cos-y*sin)*sc, y: cy+(x*sin+y*cos)*sc }; });
+  setTimeout(() => addStroke(pts, { tone:1 }), 180);
+}
+
+// ---- Bewegung: sanftes Schwingen senkrecht zum Rueckgrat, mehr Leben bei hoher Entwicklung ----
+function displaced(sp, s, dev){
+  const t=clock*0.001, m=sp.length, out=[], amp=0.8+dev*4;
+  for (let i=0;i<m;i++){
+    const a=sp[Math.max(0,i-1)], b=sp[Math.min(m-1,i+1)];
+    let tx=b.x-a.x, ty=b.y-a.y; const tl=Math.hypot(tx,ty)||1;
+    const nx=-ty/tl, ny=tx/tl;
+    const w=amp*( Math.sin(t*1.0 + i*0.3 + s.phase) + 0.4*Math.sin(t*1.7 - i*0.15 + s.seed) );
+    out.push({ x: sp[i].x + nx*w, y: sp[i].y + ny*w });
+  }
+  return out;
+}
+// Koerperradius: dick in der Mitte, duenn an den Enden, Beule beim Kopf, waechst mit Entwicklung
+function radiusAt(i, n, s, dev){
+  const u=i/(n-1);
+  let r = Math.pow(Math.sin(Math.PI*u), 0.6)*s.bodyW;
+  r += Math.exp(-Math.pow((u-s.headEnd)/0.14, 2))*s.headW*0.6;
+  return r*(0.3 + 0.7*smooth(dev,0.2,0.95));
+}
+
+// ---- Bleistift: mehrere leicht versetzte, halbtransparente Striche ----
+function pencil(pts, alpha, width, tone, passes, close){
+  if (pts.length < 2) return;
+  const col = tone ? '58,54,64' : '46,42,44';
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  for (let pass=0; pass<passes; pass++){
+    const jt=(pass-(passes-1)/2)*0.9;
+    ctx.beginPath();
+    for (let i=0;i<pts.length;i++){
+      if (i===0) ctx.moveTo(pts[i].x+jt, pts[i].y+jt*0.6);
+      else {
+        const mx=(pts[i-1].x+pts[i].x)/2+jt, my=(pts[i-1].y+pts[i].y)/2+jt*0.6;
+        ctx.quadraticCurveTo(pts[i-1].x+jt, pts[i-1].y+jt*0.6, mx, my);
+      }
+    }
+    if (close) ctx.closePath();
+    ctx.strokeStyle='rgba('+col+','+(alpha*0.5)+')';
+    ctx.lineWidth=width*(0.8+pass*0.12);
+    ctx.stroke();
+  }
+}
+
+// ---- eine Geste zeichnen, je nach Entwicklungsgrad ----
+function drawCreature(s){
+  const dev=s.dev, t=clock*0.001;
+  const dsp=displaced(s.spine, s, dev);
+  const nm=normals(dsp);
+
+  // Originalgeste ganz schwach: das Original gegen die Iteration
+  pencil(s.origin, 0.06, s.baseW, s.tone, 1, false);
+
+  // 1) Suchlinien: viele am Anfang, verblassen wenn die Form gefunden ist
+  const searchA=(1-smooth(dev,0.1,0.65))*0.38;
+  if (searchA>0.02) for (let c=0;c<3;c++){
+    const disp=dsp.map((p,i)=>({ x:p.x+nm[i].x*n1(s.seed+i+c*10)*14, y:p.y+nm[i].y*n1(s.seed+i+c*10+5)*14 }));
+    pencil(disp, searchA, s.baseW*0.8, s.tone, 1, false);
+  }
+
+  // 2) Schraffur: Volumen, wird mit der Entwicklung dichter
+  const hc=Math.floor(smooth(dev,0.4,1)*s.maxHatch);
+  for (let k=0;k<hc;k++){
+    const idx=(k*7+3)%dsp.length;
+    const r=radiusAt(idx, dsp.length, s, dev)*0.7;
+    const off=n1(s.seed+k*5)*2*r;
+    const cx=dsp[idx].x+nm[idx].x*off, cy=dsp[idx].y+nm[idx].y*off;
+    const len=6+(n1(s.seed+k)+0.5)*8;
+    pencil([{x:cx-len*0.7,y:cy-len*0.7},{x:cx+len*0.7,y:cy+len*0.7}], 0.2, s.baseW*0.6, s.tone, 1, false);
+  }
+
+  // 3) Kontur: die aeussere Umrisslinie taucht auf und wird sicherer
+  const contA=smooth(dev,0.35,0.9)*0.7;
+  if (contA>0.02){
+    const left=[], right=[];
+    for (let i=0;i<dsp.length;i++){ const r=radiusAt(i, dsp.length, s, dev);
+      left.push({x:dsp[i].x+nm[i].x*r, y:dsp[i].y+nm[i].y*r});
+      right.push({x:dsp[i].x-nm[i].x*r, y:dsp[i].y-nm[i].y*r}); }
+    pencil(left.concat(right.reverse()), contA, s.baseW*1.1, s.tone, 2, true);
+  }
+
+  // 4) das sichere Rueckgrat
+  pencil(dsp, 0.26+0.5*smooth(dev,0.2,0.9), s.baseW, s.tone, 2, false);
+
+  // 5) Glieder wachsen aus dem Rueckgrat, ab der Formfindung
+  const grow=smooth(dev,0.5,1);
+  if (grow>0.02) for (const L of s.limbs){
+    const len=L.maxLen*grow; if (len<3) continue;
+    const idx=Math.round(L.u*(dsp.length-1)), base=dsp[idx], nb=nm[idx];
+    const swing=Math.sin(t*2 + L.seed)*0.35*grow, pl=[base];
+    for (let k=1;k<=L.seg;k++){ const f=k/L.seg, bend=k>L.seg/2?swing:0;
+      const dx=nb.x*L.dir*Math.cos(bend)-nb.y*L.dir*Math.sin(bend);
+      const dy=nb.x*L.dir*Math.sin(bend)+nb.y*L.dir*Math.cos(bend);
+      pl.push({ x:base.x+dx*len*f+n1(L.seed+k)*3, y:base.y+dy*len*f+n1(L.seed+k+9)*3 }); }
+    pencil(pl, 0.5, s.baseW, s.tone, 2, false);
+  }
+
+  // 6) Kopf: ein geschlossener Bogen an einem Ende
+  if (dev>0.55){
+    const idx=s.headEnd? dsp.length-1:0, c=dsp[idx], hr=s.headW*smooth(dev,0.55,1);
+    if (hr>2){ const ell=[]; for (let a=0;a<=16;a++){ const th=a/16*Math.PI*2;
+      ell.push({x:c.x+Math.cos(th)*hr, y:c.y+Math.sin(th)*hr*1.1}); }
+      pencil(ell, 0.5, s.baseW, s.tone, 2, true); }
+  }
+}
+
+// ---- Hauptschleife ----
+const phaseEl=document.getElementById('phase');
+function loop(now){
+  const dt=now-lastT; lastT=now;
+  if (power) clock+=dt;
+  if (auto && power) devTarget=Math.min(1, devTarget + dt*0.000022);   // ~45s von abstrakt bis Figur
+
+  ctx.fillStyle='rgb('+PAPER[0]+','+PAPER[1]+','+PAPER[2]+')';
+  ctx.fillRect(0,0,W,H);
+
+  for (const s of strokes){ s.dev += (devTarget - s.dev)*0.03; drawCreature(s); }
+  if (current && current.pts.length>1) pencil(current.pts, 0.8, 1.6, 0, 3, false);
+
+  const d=devTarget, name = d<0.25?'Suchen' : d<0.5?'Verdichten' : d<0.75?'Formfindung' : 'Erwachen';
+  phaseEl.textContent='Phase: '+name+'  ('+Math.round(d*100)+'%)';
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- Eingabe ----
+let pressing=false;
+const hint=document.getElementById('hint');
+cv.addEventListener('pointerdown', e => { pressing=true; cv.setPointerCapture(e.pointerId);
+  current={pts:[{x:e.clientX,y:e.clientY}]}; hint.classList.add('gone'); });
+cv.addEventListener('pointermove', e => { if(!pressing||!current) return;
+  const last=current.pts[current.pts.length-1], dx=e.clientX-last.x, dy=e.clientY-last.y;
+  if (dx*dx+dy*dy > 24) current.pts.push({x:e.clientX,y:e.clientY}); });
+function endStroke(){ if(!pressing) return; pressing=false;
+  if (current && current.pts.length>1){ const s=addStroke(current.pts.slice(), {tone:0}); if (duett) makeAIAnswer(s); }
+  current=null; }
+cv.addEventListener('pointerup', endStroke);
+cv.addEventListener('pointercancel', endStroke);
+
+// ---- Bedienung ----
+const btnDuett=document.getElementById('btnDuett'), btnAuto=document.getElementById('btnAuto');
+const btnPlug=document.getElementById('btnPlug'), slDev=document.getElementById('slDev');
+btnDuett.onclick=()=>{ duett=!duett; btnDuett.textContent='Duett: '+(duett?'an':'aus'); btnDuett.classList.toggle('on',duett); };
+slDev.oninput=()=>{ auto=false; btnAuto.classList.remove('on'); btnAuto.textContent='Entwicklung starten'; devTarget=slDev.value/100; };
+btnAuto.onclick=()=>{ auto=!auto; btnAuto.classList.toggle('on',auto); btnAuto.textContent=auto?'Entwicklung anhalten':'Entwicklung starten'; };
+btnPlug.onclick=()=>{ power=!power; btnPlug.textContent=power?'Stecker ziehen':'Stecker rein';
+  document.body.style.filter=power?'none':'contrast(.9) brightness(.97)'; };
+document.getElementById('btnClear').onclick=()=>{ strokes=[]; current=null; devTarget=0; slDev.value=0;
+  auto=false; btnAuto.classList.remove('on'); btnAuto.textContent='Entwicklung starten'; };
+document.getElementById('btnFull').onclick=()=>{ if(!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); };
+setInterval(()=>{ if(auto) slDev.value=Math.round(devTarget*100); }, 150);
+</script>
+</body>
+</html>

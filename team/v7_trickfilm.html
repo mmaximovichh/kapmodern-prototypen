@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Trickfilm, kochende Linie</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: rgb(236, 229, 216);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    display: block;
+  }
+  #ui {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 16px;
+    background: rgba(250, 247, 240, 0.55);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border-radius: 20px;
+    box-shadow: 0 4px 20px rgba(60, 50, 40, 0.12);
+    color: rgb(70, 64, 60);
+    font-size: 13px;
+    z-index: 10;
+    max-width: calc(100vw - 24px);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .slider-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    min-width: 96px;
+  }
+  .slider-group label {
+    font-size: 11px;
+    letter-spacing: 0.3px;
+    opacity: 0.8;
+    white-space: nowrap;
+  }
+  input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100px;
+    height: 3px;
+    border-radius: 3px;
+    background: rgba(90, 80, 70, 0.35);
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: rgb(80, 74, 70);
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border: none;
+    border-radius: 50%;
+    background: rgb(80, 74, 70);
+    cursor: pointer;
+  }
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    color: rgb(60, 55, 52);
+    background: rgba(255, 255, 255, 0.4);
+    border: 1px solid rgba(90, 80, 70, 0.25);
+    border-radius: 14px;
+    padding: 8px 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  button:hover { background: rgba(255, 255, 255, 0.75); }
+  button:active { background: rgba(220, 214, 204, 0.9); }
+  button.active {
+    background: rgba(70, 64, 60, 0.85);
+    color: rgb(245, 240, 233);
+    border-color: transparent;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="ui">
+  <div class="slider-group">
+    <label>Tempo</label>
+    <input id="tempo" type="range" min="0" max="100" value="52">
+  </div>
+  <div class="slider-group">
+    <label>Kochen</label>
+    <input id="boil" type="range" min="0" max="100" value="55">
+  </div>
+  <button id="unplug">Stecker ziehen</button>
+  <button id="clear">Leeren</button>
+  <button id="fs">Vollbild</button>
+</div>
+
+<script>
+"use strict";
+(function () {
+
+  // ---------------------------------------------------------------------------
+  // Canvas + DPR setup
+  // ---------------------------------------------------------------------------
+  const canvas = document.getElementById("stage");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const PAPER = "rgb(236,229,216)";
+  const GRAPHITE = { r: 44, g: 41, b: 44 };
+
+  let W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    buildPaperTexture();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paper texture (baked once per resize, drawn cheaply each frame)
+  // ---------------------------------------------------------------------------
+  let paperCanvas = document.createElement("canvas");
+  let paperReady = false;
+
+  function buildPaperTexture() {
+    paperCanvas.width = Math.max(1, Math.round(W));
+    paperCanvas.height = Math.max(1, Math.round(H));
+    const pctx = paperCanvas.getContext("2d");
+    pctx.fillStyle = PAPER;
+    pctx.fillRect(0, 0, W, H);
+    // subtle grain
+    const img = pctx.getImageData(0, 0, paperCanvas.width, paperCanvas.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (Math.random() - 0.5) * 14;
+      d[i]   = Math.max(0, Math.min(255, d[i]   + n));
+      d[i+1] = Math.max(0, Math.min(255, d[i+1] + n));
+      d[i+2] = Math.max(0, Math.min(255, d[i+2] + n));
+    }
+    pctx.putImageData(img, 0, 0);
+    // faint vignette warmth
+    const g = pctx.createRadialGradient(W*0.5, H*0.45, Math.min(W,H)*0.2, W*0.5, H*0.5, Math.max(W,H)*0.75);
+    g.addColorStop(0, "rgba(255,252,245,0.10)");
+    g.addColorStop(1, "rgba(120,105,88,0.10)");
+    pctx.fillStyle = g;
+    pctx.fillRect(0, 0, W, H);
+    paperReady = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Deterministic value noise for the "boil" (so a spatial point wiggles smoothly)
+  // ---------------------------------------------------------------------------
+  function hash(n) {
+    const s = Math.sin(n) * 43758.5453123;
+    return s - Math.floor(s);
+  }
+  // smooth 1D noise in [-1,1]
+  function noise1(x) {
+    const i = Math.floor(x);
+    const f = x - i;
+    const u = f * f * (3 - 2 * f);
+    const a = hash(i) * 2 - 1;
+    const b = hash(i + 1) * 2 - 1;
+    return a + (b - a) * u;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drawing / stroke capture
+  // ---------------------------------------------------------------------------
+  // A "seed stroke" is a polyline of raw points the user drew.
+  // We resample it into an even spine and treat it as the creature's contour.
+  let seedPoints = [];      // raw pointer points {x,y}
+  let creature = null;      // built figure once a stroke exists
+  let drawing = false;
+  let hasDrawn = false;
+  let unplugged = false;
+
+  // sliders
+  const tempoEl = document.getElementById("tempo");
+  const boilEl = document.getElementById("boil");
+  function tempo01() { return tempoEl.value / 100; }
+  function boil01() { return boilEl.value / 100; }
+
+  // ---------------------------------------------------------------------------
+  // Resample a polyline into N points spaced evenly by arc length
+  // ---------------------------------------------------------------------------
+  function resample(points, spacing) {
+    if (points.length < 2) return points.slice();
+    const out = [points[0]];
+    let prev = points[0];
+    let acc = 0;
+    for (let i = 1; i < points.length; i++) {
+      let cur = points[i];
+      let dx = cur.x - prev.x, dy = cur.y - prev.y;
+      let dist = Math.hypot(dx, dy);
+      if (dist < 1e-6) { prev = cur; continue; }
+      while (acc + dist >= spacing) {
+        const t = (spacing - acc) / dist;
+        const nx = prev.x + dx * t;
+        const ny = prev.y + dy * t;
+        out.push({ x: nx, y: ny });
+        prev = { x: nx, y: ny };
+        dx = cur.x - prev.x; dy = cur.y - prev.y;
+        dist = Math.hypot(dx, dy);
+        acc = 0;
+      }
+      acc += dist;
+      prev = cur;
+    }
+    out.push(points[points.length - 1]);
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build the creature from a seed stroke.
+  // Instead of a stick-skeleton, we keep the drawn contour as a "spine",
+  // give each spine point a rest position, and animate the whole figure with
+  // organic pose fields: breathing, stretching, walking sway.
+  // ---------------------------------------------------------------------------
+  function buildCreature(rawPts) {
+    // resample to a manageable, evenly spaced spine
+    const spacing = Math.max(6, Math.min(14, 900 / Math.max(rawPts.length, 20)));
+    let spine = resample(rawPts, 9);
+    if (spine.length < 3) {
+      // too short: pad by duplicating with tiny offset so it still lives
+      spine = [rawPts[0], { x: rawPts[0].x + 30, y: rawPts[0].y }, { x: rawPts[0].x + 60, y: rawPts[0].y }];
+    }
+    const n = spine.length;
+
+    // center of mass of the drawing
+    let cx = 0, cy = 0;
+    for (const p of spine) { cx += p.x; cy += p.y; }
+    cx /= n; cy /= n;
+
+    // bounding size for scale-aware motion
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of spine) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }
+    const spanX = Math.max(1, maxX - minX);
+    const spanY = Math.max(1, maxY - minY);
+    const scale = Math.max(spanX, spanY);
+
+    // parameterize each point along the stroke [0..1] and store rest offsets
+    const rest = spine.map((p, i) => ({
+      x: p.x, y: p.y,
+      // t along the drawn line
+      t: i / (n - 1),
+      // per-point random phase so the boil is not synchronized
+      ph: hash(i * 12.9898) * Math.PI * 2,
+      ph2: hash(i * 78.233 + 1.7) * Math.PI * 2
+    }));
+
+    // pick a "head" end (whichever end is higher up on the page tends to read as head)
+    const startHigher = spine[0].y <= spine[n - 1].y;
+
+    return {
+      rest,
+      cx, cy,
+      spanX, spanY, scale,
+      startHigher,
+      n,
+      // trailing ghost poses for onion skinning
+      ghosts: [],
+      // baseline foot line for "walking" contact (lowest point)
+      groundY: maxY,
+      // slow-evolving global animation seeds
+      birth: performance.now()
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Compute an animated pose: array of {x,y} for the spine at time `now`.
+  // The motion is a blend of:
+  //   - breathing (whole body gentle expand/contract + rise)
+  //   - stretch (elongate along the stroke's principal direction)
+  //   - a travelling wave down the line (the "walk"/undulation)
+  //   - line boil (small hand-drawn jitter, per-point, smoothed)
+  // All amplitudes scale with the figure size so big or small drawings feel right.
+  // ---------------------------------------------------------------------------
+  function computePose(cr, now, boilAmount) {
+    const rest = cr.rest;
+    const n = cr.n;
+    const t = (now - cr.birth) / 1000; // seconds since born
+    const spd = 0.5 + tempo01() * 2.2;  // animation speed multiplier
+    const phase = t * spd;
+
+    // life ramp: creature "wakes up" over the first ~2.2s, motion swells in
+    const wake = Math.min(1, (now - cr.birth) / 2200);
+    const life = wake * wake * (3 - 2 * wake); // smoothstep
+
+    // global breathing 0..1
+    const breath = (Math.sin(phase * 1.9) * 0.5 + 0.5);
+    // occasional bigger stretch, low frequency
+    const stretchPulse = Math.max(0, Math.sin(phase * 0.55 - 0.8));
+    // walking bob
+    const bob = Math.sin(phase * 3.1);
+
+    const s = cr.scale;
+    const boilPx = (0.5 + boilAmount * 6.5) * (0.6 + s * 0.012); // boil amplitude in px
+    const breatheAmp = s * 0.05 * life;
+    const stretchAmp = s * 0.10 * life;
+    const swayAmp = s * 0.08 * life;
+
+    // principal axis of the stroke (start -> end), for directional stretch
+    const ax = rest[n - 1].x - rest[0].x;
+    const ay = rest[n - 1].y - rest[0].y;
+    const aLen = Math.hypot(ax, ay) || 1;
+    const ux = ax / aLen, uy = ay / aLen;       // unit along stroke
+    const px = -uy, py = ux;                     // perpendicular
+
+    const pose = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const r = rest[i];
+      let x = r.x, y = r.y;
+
+      // vector from center (for breathing scale about center of mass)
+      const dx = x - cr.cx;
+      const dy = y - cr.cy;
+
+      // --- breathing: expand/contract about center, plus a gentle lift ---
+      const bScale = (breath - 0.5) * 2; // -1..1
+      x += dx * bScale * 0.06 * life;
+      y += dy * bScale * 0.06 * life;
+      y -= breatheAmp * breath * 0.6;         // slight rise on inhale
+
+      // --- stretch along the principal axis (reaching / elongating) ---
+      // points further along the stroke move more, giving a "reach" feel
+      const reach = (r.t - 0.5) * 2; // -1 at start, +1 at end
+      const st = stretchPulse * stretchAmp * reach;
+      x += ux * st;
+      y += uy * st;
+
+      // --- travelling wave (undulation / stepping), perpendicular to line ---
+      const wave = Math.sin(phase * 3.0 - r.t * 6.2831 * 1.4 + r.ph);
+      const waveEnv = Math.sin(r.t * Math.PI); // zero at the two ends, max in middle
+      x += px * wave * swayAmp * waveEnv;
+      y += py * wave * swayAmp * waveEnv;
+
+      // --- walking bob: whole body subtle vertical hop tied to gait ---
+      y += bob * s * 0.015 * life * (0.4 + waveEnv * 0.6);
+
+      // --- line boil: small, smoothed, per-point hand-drawn jitter ---
+      // Uses time-driven value noise so it flickers like redrawn frames.
+      const nb = noise1(phase * 2.7 + r.ph * 3.3 + i * 0.7);
+      const nb2 = noise1(phase * 2.3 + r.ph2 * 2.1 + i * 1.9);
+      x += nb * boilPx;
+      y += nb2 * boilPx;
+
+      pose[i] = { x, y };
+    }
+    return pose;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rough pencil rendering of a spine (contour), redrawn every frame so it
+  // "cooks". We draw it as several overlaid, slightly jittered translucent
+  // passes with grainy dabs to feel like graphite.
+  // ---------------------------------------------------------------------------
+
+  // Draw a single translucent pencil pass following the pose points, with
+  // a small jitter offset and given alpha/width.
+  function drawPass(pose, offX, offY, width, alpha, jitterSeed) {
+    const n = pose.length;
+    if (n < 2) return;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(" + GRAPHITE.r + "," + GRAPHITE.g + "," + GRAPHITE.b + "," + alpha + ")";
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    // catmull-rom-ish smoothing via quadratic midpoints, with per-pass jitter
+    let p0 = pose[0];
+    let jx0 = (hash(jitterSeed) - 0.5) * 1.4;
+    let jy0 = (hash(jitterSeed + 9.1) - 0.5) * 1.4;
+    ctx.moveTo(p0.x + offX + jx0, p0.y + offY + jy0);
+    for (let i = 1; i < n - 1; i++) {
+      const p = pose[i];
+      const pn = pose[i + 1];
+      const jx = (hash(jitterSeed + i * 1.13) - 0.5) * 1.3;
+      const jy = (hash(jitterSeed + i * 2.17 + 3.3) - 0.5) * 1.3;
+      const mx = (p.x + pn.x) * 0.5;
+      const my = (p.y + pn.y) * 0.5;
+      ctx.quadraticCurveTo(p.x + offX + jx, p.y + offY + jy, mx + offX + jx, my + offY + jy);
+    }
+    const last = pose[n - 1];
+    ctx.lineTo(last.x + offX, last.y + offY);
+    ctx.stroke();
+  }
+
+  // Grainy graphite dabs along the pose for texture (kept cheap).
+  function drawGrain(pose, boilAmount, seed) {
+    const n = pose.length;
+    if (n < 2) return;
+    ctx.fillStyle = "rgba(" + GRAPHITE.r + "," + GRAPHITE.g + "," + GRAPHITE.b + ",0.18)";
+    // number of dabs deckeln for performance
+    const dabs = Math.min(220, n * 3);
+    for (let k = 0; k < dabs; k++) {
+      const fi = (k / dabs) * (n - 1);
+      const i = Math.floor(fi);
+      const f = fi - i;
+      const a = pose[i];
+      const b = pose[Math.min(n - 1, i + 1)];
+      const x = a.x + (b.x - a.x) * f;
+      const y = a.y + (b.y - a.y) * f;
+      const rr = hash(seed + k * 7.7);
+      const rr2 = hash(seed + k * 3.1 + 1.9);
+      const spread = 1.6 + boilAmount * 2.2;
+      const ox = (rr - 0.5) * spread * 2;
+      const oy = (rr2 - 0.5) * spread * 2;
+      const s = 0.4 + hash(seed + k) * 0.9;
+      ctx.fillRect(x + ox, y + oy, s, s);
+    }
+  }
+
+  // Full render of a creature pose with pencil layering.
+  function renderPose(pose, boilAmount, alphaScale, frameSeed) {
+    // three overlaid passes: base soft, mid, dark core
+    drawPass(pose, 0.6, 0.4, 3.0, 0.10 * alphaScale, frameSeed + 0.5);
+    drawPass(pose, -0.4, 0.5, 2.2, 0.16 * alphaScale, frameSeed + 4.2);
+    drawPass(pose, 0.0, 0.0, 1.3, 0.34 * alphaScale, frameSeed + 8.8);
+    drawGrain(pose, boilAmount, frameSeed);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live seed-stroke rendering while the user is drawing (before the creature
+  // takes over). Simple grainy pencil so the first moment already looks good.
+  // ---------------------------------------------------------------------------
+  function drawSeedLive() {
+    if (seedPoints.length < 2) return;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    // layered translucent pencil
+    for (let pass = 0; pass < 3; pass++) {
+      ctx.strokeStyle = "rgba(" + GRAPHITE.r + "," + GRAPHITE.g + "," + GRAPHITE.b + "," + (0.12 + pass * 0.1) + ")";
+      ctx.lineWidth = 3.0 - pass * 0.9;
+      ctx.beginPath();
+      const jx = (pass - 1) * 0.5;
+      ctx.moveTo(seedPoints[0].x + jx, seedPoints[0].y);
+      for (let i = 1; i < seedPoints.length - 1; i++) {
+        const p = seedPoints[i], pn = seedPoints[i + 1];
+        const mx = (p.x + pn.x) * 0.5, my = (p.y + pn.y) * 0.5;
+        ctx.quadraticCurveTo(p.x + jx, p.y, mx + jx, my);
+      }
+      const last = seedPoints[seedPoints.length - 1];
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hint text
+  // ---------------------------------------------------------------------------
+  function drawHint() {
+    if (hasDrawn) return;
+    ctx.save();
+    ctx.fillStyle = "rgba(70,64,60,0.45)";
+    ctx.font = "300 20px -apple-system, Helvetica, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Zeichne einen Strich, er erwacht.", W / 2, H / 2);
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------------
+  let lastGhostTime = 0;
+
+  function frame(now) {
+    // paint paper (also clears previous frame)
+    if (paperReady) {
+      ctx.drawImage(paperCanvas, 0, 0, W, H);
+    } else {
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    drawHint();
+
+    if (drawing) {
+      // show the live pencil stroke
+      drawSeedLive();
+    } else if (creature) {
+      const boilAmount = boil01();
+
+      if (unplugged) {
+        // frozen: draw the last held pose (and its ghosts, faintly) once, static
+        // draw ghosts underneath
+        for (let g = 0; g < creature.ghosts.length; g++) {
+          const gh = creature.ghosts[g];
+          const a = (g + 1) / (creature.ghosts.length + 1);
+          renderPose(gh.pose, boilAmount, 0.22 * a, gh.seed);
+        }
+        renderPose(creature.heldPose || computePose(creature, creature.frozenAt || now, boilAmount),
+                   boilAmount, 1.0, creature.heldSeed || 12.3);
+      } else {
+        const pose = computePose(creature, now, boilAmount);
+
+        // onion-skinning: periodically store ghost poses
+        const ghostInterval = 90; // ms between captured ghosts
+        if (now - lastGhostTime > ghostInterval) {
+          lastGhostTime = now;
+          creature.ghosts.push({ pose: pose.map(p => ({ x: p.x, y: p.y })), seed: Math.random() * 1000 });
+          if (creature.ghosts.length > 4) creature.ghosts.shift();
+        }
+
+        // draw ghosts (older = fainter), behind the live figure
+        for (let g = 0; g < creature.ghosts.length - 1; g++) {
+          const gh = creature.ghosts[g];
+          const a = (g + 1) / (creature.ghosts.length + 1);
+          renderPose(gh.pose, boilAmount, 0.20 * a, gh.seed);
+        }
+
+        // live figure, fully redrawn this frame (the "cooking")
+        const frameSeed = Math.random() * 1000;
+        renderPose(pose, boilAmount, 1.0, frameSeed);
+
+        // remember last pose for a clean freeze
+        creature.heldPose = pose;
+        creature.heldSeed = frameSeed;
+        creature.frozenAt = now;
+      }
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pointer handling
+  // ---------------------------------------------------------------------------
+  function pointerPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  let activePointer = null;
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (unplugged) return;         // no drawing while unplugged
+    if (activePointer !== null) return;
+    activePointer = e.pointerId;
+    canvas.setPointerCapture(e.pointerId);
+    drawing = true;
+    hasDrawn = true;
+    seedPoints = [pointerPos(e)];
+    creature = null; // start a fresh being from this new stroke
+    e.preventDefault();
+  }, { passive: false });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drawing || e.pointerId !== activePointer) return;
+    const p = pointerPos(e);
+    const last = seedPoints[seedPoints.length - 1];
+    // only add if moved enough (denoise)
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 1.2) {
+      seedPoints.push(p);
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  function endStroke(e) {
+    if (e && e.pointerId !== activePointer) return;
+    if (!drawing) return;
+    drawing = false;
+    activePointer = null;
+    if (seedPoints.length >= 2) {
+      creature = buildCreature(seedPoints);
+      lastGhostTime = performance.now();
+    }
+    seedPoints = [];
+  }
+
+  canvas.addEventListener("pointerup", endStroke, { passive: false });
+  canvas.addEventListener("pointercancel", endStroke, { passive: false });
+  canvas.addEventListener("pointerleave", (e) => {
+    // if pointer leaves while drawing, finish the stroke gracefully
+    if (drawing && e.pointerId === activePointer) endStroke(e);
+  }, { passive: false });
+
+  // ---------------------------------------------------------------------------
+  // Controls
+  // ---------------------------------------------------------------------------
+  const unplugBtn = document.getElementById("unplug");
+  unplugBtn.addEventListener("click", () => {
+    unplugged = !unplugged;
+    if (unplugged) {
+      unplugBtn.textContent = "Stecker rein";
+      unplugBtn.classList.add("active");
+    } else {
+      unplugBtn.textContent = "Stecker ziehen";
+      unplugBtn.classList.remove("active");
+      // resume: rebase the birth clock so motion continues smoothly
+      if (creature) {
+        creature.birth = performance.now() - (creature.frozenAt - creature.birth);
+      }
+    }
+  });
+
+  document.getElementById("clear").addEventListener("click", () => {
+    creature = null;
+    seedPoints = [];
+    drawing = false;
+    activePointer = null;
+    hasDrawn = false;
+    // leaving unplugged state as-is is fine, but reset to plugged for a fresh start
+    if (unplugged) {
+      unplugged = false;
+      unplugBtn.textContent = "Stecker ziehen";
+      unplugBtn.classList.remove("active");
+    }
+  });
+
+  const fsBtn = document.getElementById("fs");
+  fsBtn.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen || function(){}).call(document.documentElement);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+    }
+  });
+
+  // prevent iOS double-tap zoom / scrolling on UI
+  document.getElementById("ui").addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", resize);
+  resize();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

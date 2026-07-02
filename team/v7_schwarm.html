@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Schwarm, Murmuration</title>
+<style>
+  :root {
+    --papier: rgb(236, 229, 216);
+    --graphit: rgb(44, 41, 44);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--papier);
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  #canvas {
+    position: fixed;
+    inset: 0;
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  /* Hinweistext auf dem Canvas */
+  #hint {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(44, 41, 44, 0.42);
+    font-size: clamp(15px, 2.4vw, 22px);
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-align: center;
+    pointer-events: none;
+    transition: opacity 1.1s ease;
+    line-height: 1.6;
+  }
+  #hint.hidden { opacity: 0; }
+
+  /* Minimale Bedienleiste unten */
+  #bar {
+    position: fixed;
+    left: 50%;
+    bottom: max(14px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 11px 18px;
+    background: rgba(236, 229, 216, 0.62);
+    -webkit-backdrop-filter: blur(9px) saturate(1.1);
+    backdrop-filter: blur(9px) saturate(1.1);
+    border: 1px solid rgba(44, 41, 44, 0.12);
+    border-radius: 20px;
+    box-shadow: 0 6px 22px rgba(44, 41, 44, 0.10);
+    z-index: 10;
+    max-width: calc(100vw - 24px);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .grp {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    min-width: 118px;
+  }
+  .grp label {
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: rgba(44, 41, 44, 0.62);
+    white-space: nowrap;
+  }
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 118px;
+    height: 3px;
+    background: rgba(44, 41, 44, 0.22);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--graphit);
+    border: 2px solid var(--papier);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--graphit);
+    border: 2px solid var(--papier);
+    cursor: pointer;
+  }
+  .btn {
+    font-family: inherit;
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+    color: var(--graphit);
+    background: rgba(44, 41, 44, 0.06);
+    border: 1px solid rgba(44, 41, 44, 0.16);
+    border-radius: 13px;
+    padding: 8px 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .btn:hover { background: rgba(44, 41, 44, 0.12); }
+  .btn:active { background: rgba(44, 41, 44, 0.20); }
+  .btn.aktiv {
+    background: var(--graphit);
+    color: var(--papier);
+    border-color: var(--graphit);
+  }
+  .sep {
+    width: 1px;
+    align-self: stretch;
+    background: rgba(44, 41, 44, 0.12);
+    margin: 2px 0;
+  }
+</style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <div id="hint">Zeichne einen Strich.<br>Der Schwarm erwacht.</div>
+
+  <div id="bar">
+    <div class="grp">
+      <label>Ruhe, Unruhe</label>
+      <input id="sUnruhe" type="range" min="0" max="100" value="42">
+    </div>
+    <div class="grp">
+      <label>Anziehung Strich</label>
+      <input id="sZug" type="range" min="0" max="100" value="60">
+    </div>
+    <div class="sep"></div>
+    <button id="bStecker" class="btn">Stecker ziehen</button>
+    <button id="bLeeren" class="btn">Leeren</button>
+    <button id="bVoll" class="btn">Vollbild</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Grundeinrichtung ----------
+  var canvas = document.getElementById("canvas");
+  var ctx = canvas.getContext("2d", { alpha: false });
+  var hint = document.getElementById("hint");
+  var bar = document.getElementById("bar");
+
+  var PAPIER = "rgb(236, 229, 216)";
+  var W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // Frischer Papiergrund nach Groessenwechsel
+    ctx.fillStyle = PAPIER;
+    ctx.fillRect(0, 0, W, H);
+    drawGrain();
+  }
+
+  // ---------- Feines Papierkorn (einmalig, statisch) ----------
+  var grainCanvas = document.createElement("canvas");
+  function buildGrain() {
+    grainCanvas.width = 220;
+    grainCanvas.height = 220;
+    var g = grainCanvas.getContext("2d");
+    var img = g.createImageData(220, 220);
+    var d = img.data;
+    for (var i = 0; i < d.length; i += 4) {
+      // leichtes, warmes Rauschen um die Papierfarbe herum
+      var n = (Math.random() - 0.5) * 12;
+      d[i] = 236 + n;
+      d[i + 1] = 229 + n;
+      d[i + 2] = 216 + n;
+      d[i + 3] = 15; // sehr subtil
+    }
+    g.putImageData(img, 0, 0);
+  }
+  buildGrain();
+
+  function drawGrain() {
+    // gekacheltes, dezentes Korn ueber den Papiergrund legen
+    var pat = ctx.createPattern(grainCanvas, "repeat");
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = pat;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  // ---------- Regler und Zustand ----------
+  var sUnruhe = document.getElementById("sUnruhe");
+  var sZug = document.getElementById("sZug");
+  var frozen = false; // Stecker gezogen
+
+  // ---------- Attraktor: die gezeichneten Striche ----------
+  // Wir speichern Sample-Punkte entlang der Striche. Der Schwarm wird zum
+  // jeweils naechsten Punkt gezogen. Ueber ein Raster finden Agenten schnell
+  // den naechsten Attraktor-Punkt.
+  var attractors = [];        // {x, y}
+  var ATTR_MIN_DIST = 7;      // Mindestabstand zwischen Sample-Punkten
+  var attrGrid = null;        // Raster fuer schnelle Naehe-Suche
+  var ATTR_CELL = 46;
+  var attrCols = 0, attrRows = 0;
+
+  function buildAttrGrid() {
+    attrCols = Math.max(1, Math.ceil(W / ATTR_CELL));
+    attrRows = Math.max(1, Math.ceil(H / ATTR_CELL));
+    attrGrid = new Array(attrCols * attrRows);
+    for (var i = 0; i < attrGrid.length; i++) attrGrid[i] = [];
+    for (var a = 0; a < attractors.length; a++) {
+      var p = attractors[a];
+      var cx = clampInt(Math.floor(p.x / ATTR_CELL), 0, attrCols - 1);
+      var cy = clampInt(Math.floor(p.y / ATTR_CELL), 0, attrRows - 1);
+      attrGrid[cy * attrCols + cx].push(p);
+    }
+  }
+
+  function addAttractor(x, y) {
+    if (attractors.length) {
+      var last = attractors[attractors.length - 1];
+      var dx = x - last.x, dy = y - last.y;
+      if (dx * dx + dy * dy < ATTR_MIN_DIST * ATTR_MIN_DIST) return;
+    }
+    var p = { x: x, y: y };
+    attractors.push(p);
+    if (!attrGrid) buildAttrGrid();
+    var cx = clampInt(Math.floor(x / ATTR_CELL), 0, attrCols - 1);
+    var cy = clampInt(Math.floor(y / ATTR_CELL), 0, attrRows - 1);
+    attrGrid[cy * attrCols + cx].push(p);
+  }
+
+  // Naechsten Attraktor-Punkt zu (x,y) suchen (Ring-Suche im Raster)
+  function nearestAttractor(x, y, out) {
+    if (!attractors.length) return false;
+    var cx = clampInt(Math.floor(x / ATTR_CELL), 0, attrCols - 1);
+    var cy = clampInt(Math.floor(y / ATTR_CELL), 0, attrRows - 1);
+    var best = null, bestD = Infinity;
+    // Ringe nach aussen, bis etwas gefunden und der naechste Ring nichts Naeheres bieten kann
+    for (var r = 0; r <= Math.max(attrCols, attrRows); r++) {
+      var found = false;
+      var x0 = cx - r, x1 = cx + r, y0 = cy - r, y1 = cy + r;
+      for (var gy = y0; gy <= y1; gy++) {
+        if (gy < 0 || gy >= attrRows) continue;
+        for (var gx = x0; gx <= x1; gx++) {
+          if (gx < 0 || gx >= attrCols) continue;
+          // nur den Ring-Rand pruefen (sonst schon geprueft)
+          if (r > 0 && gx > x0 && gx < x1 && gy > y0 && gy < y1) continue;
+          var cell = attrGrid[gy * attrCols + gx];
+          for (var k = 0; k < cell.length; k++) {
+            var p = cell[k];
+            var dx = p.x - x, dy = p.y - y;
+            var d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = p; found = true; }
+          }
+        }
+      }
+      // Wenn gefunden, noch einen Ring weiter suchen (Sicherheit an Zellgrenzen), dann stop
+      if (best && r > 0 && (r - 1) * ATTR_CELL * (r - 1) * ATTR_CELL > bestD) break;
+      if (best && found === false && r > 1) break;
+    }
+    if (best) { out.x = best.x; out.y = best.y; out.d2 = bestD; return true; }
+    return false;
+  }
+
+  function clampInt(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  // ---------- Schwarm-Agenten ----------
+  var AGENT_CAP = 2200;                 // Deckel der Agentenzahl
+  var agents = [];
+  function makeAgent(x, y) {
+    var a = Math.random() * Math.PI * 2;
+    var s = 0.4 + Math.random() * 0.6;
+    return {
+      x: x, y: y,
+      px: x, py: y,            // Vorgaengerposition fuer Strich-Rendering
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      phase: Math.random() * Math.PI * 2, // eigener Rhythmus fuers Atmen
+      wob: 0.6 + Math.random() * 0.8,     // individuelle Wanderlust
+      tone: 0.55 + Math.random() * 0.45   // Graphit-Ton-Variation
+    };
+  }
+
+  function seedAgents() {
+    agents.length = 0;
+    // aus dem Papierrand hereinschweben lassen (dezent), damit sie zum Strich finden
+    for (var i = 0; i < AGENT_CAP; i++) {
+      var edge = Math.random();
+      var x, y;
+      if (edge < 0.5) { x = Math.random() * W; y = Math.random() < 0.5 ? -20 : H + 20; }
+      else { x = Math.random() < 0.5 ? -20 : W + 20; y = Math.random() * H; }
+      agents.push(makeAgent(x, y));
+    }
+  }
+
+  // Ob der Schwarm aktiv ist (erst nach dem ersten Strich)
+  var awake = false;
+
+  // ---------- Flocking-Raster (fuer Nachbarschaft) ----------
+  var flockCell = 30;
+  var flockCols = 0, flockRows = 0, flockGrid = null;
+  function buildFlockGrid() {
+    flockCols = Math.max(1, Math.ceil(W / flockCell));
+    flockRows = Math.max(1, Math.ceil(H / flockCell));
+    var n = flockCols * flockRows;
+    flockGrid = new Array(n);
+    for (var i = 0; i < n; i++) flockGrid[i] = [];
+  }
+  function clearFlockGrid() {
+    for (var i = 0; i < flockGrid.length; i++) flockGrid[i].length = 0;
+  }
+
+  // ---------- Globaler Atem: bestimmt Formen und Ausbrechen ----------
+  // breathe pendelt langsam. Nahe 1: Schwarm haelt die Form am Strich.
+  // Nahe 0: Schwarm bricht aus, wirbelt frei, findet dann wieder zurueck.
+  var breathe = 0.0;
+  var breatheT = 0;
+  var swirlCx = 0, swirlCy = 0;   // wandernder Wirbel-Mittelpunkt beim Ausbrechen
+  var swirlDir = 1;
+
+  // ---------- Zeichnen des Nutzerstrichs (Eingabe) ----------
+  var drawing = false;
+  var lastPointerT = 0;
+
+  function pointerToCanvas(e) {
+    var rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function onDown(e) {
+    if (frozen) return;
+    canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    drawing = true;
+    hideHint();
+    if (!awake) { awake = true; }
+    var p = pointerToCanvas(e);
+    addAttractor(p.x, p.y);
+    lastDrawX = p.x; lastDrawY = p.y;
+    e.preventDefault();
+  }
+  var lastDrawX = 0, lastDrawY = 0;
+  function onMove(e) {
+    if (!drawing || frozen) return;
+    // koaleszierte Events fuer glatte Striche nutzen, wenn vorhanden
+    var evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [e];
+    for (var i = 0; i < evs.length; i++) {
+      var p = pointerToCanvas(evs[i]);
+      // Zwischenpunkte einfuegen, damit der Attraktor luekenlos ist
+      var dx = p.x - lastDrawX, dy = p.y - lastDrawY;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var steps = Math.max(1, Math.floor(dist / ATTR_MIN_DIST));
+      for (var s = 1; s <= steps; s++) {
+        addAttractor(lastDrawX + (dx * s) / steps, lastDrawY + (dy * s) / steps);
+      }
+      lastDrawX = p.x; lastDrawY = p.y;
+    }
+    e.preventDefault();
+  }
+  function onUp(e) {
+    drawing = false;
+    e.preventDefault && e.preventDefault();
+  }
+
+  canvas.addEventListener("pointerdown", onDown, { passive: false });
+  canvas.addEventListener("pointermove", onMove, { passive: false });
+  window.addEventListener("pointerup", onUp, { passive: false });
+  window.addEventListener("pointercancel", onUp, { passive: false });
+
+  function hideHint() {
+    if (!hint.classList.contains("hidden")) hint.classList.add("hidden");
+  }
+
+  // ---------- Bedienung ----------
+  var bStecker = document.getElementById("bStecker");
+  document.getElementById("bLeeren").addEventListener("click", function () {
+    attractors.length = 0;
+    buildAttrGrid();
+    seedAgents();
+    awake = false;
+    breathe = 0;
+    breatheT = 0;
+    frozen = false;
+    bStecker.classList.remove("aktiv");
+    bStecker.textContent = "Stecker ziehen";
+    hint.classList.remove("hidden");
+    ctx.fillStyle = PAPIER;
+    ctx.fillRect(0, 0, W, H);
+    drawGrain();
+  });
+
+  bStecker.addEventListener("click", function () {
+    frozen = !frozen;
+    if (frozen) {
+      bStecker.classList.add("aktiv");
+      bStecker.textContent = "Stecker rein";
+    } else {
+      bStecker.classList.remove("aktiv");
+      bStecker.textContent = "Stecker ziehen";
+    }
+  });
+
+  document.getElementById("bVoll").addEventListener("click", function () {
+    var el = document.documentElement;
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (el.requestFullscreen) el.requestFullscreen();
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    } else {
+      if (document.exitFullscreen) document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  });
+
+  // ---------- Hauptschleife ----------
+  var tmpNear = { x: 0, y: 0, d2: 0 };
+
+  function step(dt) {
+    var unruhe = sUnruhe.value / 100;     // 0 ruhig .. 1 wild
+    var zug = sZug.value / 100;           // Anziehung an den Strich
+
+    // Globaler Atem: langsames, weiches Pendeln, moduliert von Unruhe.
+    // Mehr Unruhe -> haeufigeres, tieferes Ausbrechen.
+    breatheT += dt * (0.10 + unruhe * 0.28);
+    // weiche Kurve zwischen 0 und 1
+    var raw = (Math.sin(breatheT) * 0.5 + 0.5);
+    // Bei viel Unruhe laenger draussen bleiben (Form-Halten seltener)
+    breathe = Math.pow(raw, 0.7 + unruhe * 0.9);
+
+    // Wenn ausgebrochen: Wirbel-Mittelpunkt langsam ueber die Flaeche wandern lassen
+    var outness = 1 - breathe; // 1 = voll ausgebrochen
+    if (outness > 0.5) {
+      swirlCx += (Math.cos(breatheT * 0.7) * 0.6) * swirlDir;
+      swirlCy += (Math.sin(breatheT * 0.9) * 0.6) * swirlDir;
+    }
+    // Ziel-Wirbelzentrum in Schwerpunkt-Naehe halten
+    var targetCx = W * (0.5 + Math.sin(breatheT * 0.31) * 0.22);
+    var targetCy = H * (0.5 + Math.cos(breatheT * 0.27) * 0.20);
+    swirlCx += (targetCx - swirlCx) * 0.01;
+    swirlCy += (targetCy - swirlCy) * 0.01;
+
+    // Flocking-Raster fuellen
+    clearFlockGrid();
+    var i, a;
+    for (i = 0; i < agents.length; i++) {
+      a = agents[i];
+      var gx = clampInt(Math.floor(a.x / flockCell), 0, flockCols - 1);
+      var gy = clampInt(Math.floor(a.y / flockCell), 0, flockRows - 1);
+      flockGrid[gy * flockCols + gx].push(i);
+    }
+
+    var hasStroke = attractors.length > 0;
+
+    // Kraft-Parameter
+    var maxSpeed = 1.5 + unruhe * 2.4;
+    var maxForce = 0.05 + unruhe * 0.08;
+    var neighborR = 26;
+    var neighborR2 = neighborR * neighborR;
+    var sepR = 12;
+    var sepR2 = sepR * sepR;
+
+    for (i = 0; i < agents.length; i++) {
+      a = agents[i];
+
+      // Nachbarschaft (max ~ begrenzte Zahl, Raster haelt das klein)
+      var cohX = 0, cohY = 0, aliX = 0, aliY = 0, sepX = 0, sepY = 0;
+      var nCoh = 0, nAli = 0, nSep = 0;
+      var cgx = clampInt(Math.floor(a.x / flockCell), 0, flockCols - 1);
+      var cgy = clampInt(Math.floor(a.y / flockCell), 0, flockRows - 1);
+      var checked = 0;
+      for (var oy = cgy - 1; oy <= cgy + 1 && checked < 34; oy++) {
+        if (oy < 0 || oy >= flockRows) continue;
+        for (var ox = cgx - 1; ox <= cgx + 1 && checked < 34; ox++) {
+          if (ox < 0 || ox >= flockCols) continue;
+          var cell = flockGrid[oy * flockCols + ox];
+          for (var c = 0; c < cell.length && checked < 34; c++) {
+            var j = cell[c];
+            if (j === i) continue;
+            var b = agents[j];
+            var dx = b.x - a.x, dy = b.y - a.y;
+            var d2 = dx * dx + dy * dy;
+            if (d2 > neighborR2 || d2 === 0) continue;
+            checked++;
+            cohX += b.x; cohY += b.y; nCoh++;
+            aliX += b.vx; aliY += b.vy; nAli++;
+            if (d2 < sepR2) {
+              var inv = 1 / Math.sqrt(d2);
+              sepX -= dx * inv; sepY -= dy * inv; nSep++;
+            }
+          }
+        }
+      }
+
+      var ax = 0, ay = 0; // Beschleunigung
+
+      // Kohaesion
+      if (nCoh > 0) {
+        var tcx = cohX / nCoh - a.x;
+        var tcy = cohY / nCoh - a.y;
+        var lc = Math.sqrt(tcx * tcx + tcy * tcy) || 1;
+        ax += (tcx / lc) * maxForce * 0.9;
+        ay += (tcy / lc) * maxForce * 0.9;
+      }
+      // Ausrichtung
+      if (nAli > 0) {
+        var tax = aliX / nAli, tay = aliY / nAli;
+        var la = Math.sqrt(tax * tax + tay * tay) || 1;
+        ax += (tax / la) * maxForce * 1.1;
+        ay += (tay / la) * maxForce * 1.1;
+      }
+      // Separation
+      if (nSep > 0) {
+        var lsx = sepX / nSep, lsy = sepY / nSep;
+        var ls = Math.sqrt(lsx * lsx + lsy * lsy) || 1;
+        ax += (lsx / ls) * maxForce * 1.7;
+        ay += (lsy / ls) * maxForce * 1.7;
+      }
+
+      // Attraktor-Anziehung zum Strich, moduliert vom Atem (breathe)
+      if (hasStroke) {
+        if (nearestAttractor(a.x, a.y, tmpNear)) {
+          var adx = tmpNear.x - a.x;
+          var ady = tmpNear.y - a.y;
+          var ad = Math.sqrt(tmpNear.d2) || 1;
+          // Beim Form-Halten (breathe hoch) stark, beim Ausbrechen schwach.
+          var pull = zug * (0.06 + breathe * 0.22);
+          // Sanftes Andocken: nah dran Kraft reduzieren, damit sie am Strich
+          // entlang gleiten und nicht steif festkleben.
+          var near = Math.min(1, ad / 30);
+          ax += (adx / ad) * pull * near;
+          ay += (ady / ad) * pull * near;
+
+          // Beim Ausbrechen: Wirbel um wanderndes Zentrum (Murmuration)
+          if (outness > 0.15) {
+            var wdx = a.x - swirlCx, wdy = a.y - swirlCy;
+            var wd = Math.sqrt(wdx * wdx + wdy * wdy) || 1;
+            // tangentiale Kraft (senkrecht zum Radius) erzeugt das Kreisen
+            var tangX = -wdy / wd, tangY = wdx / wd;
+            var swirlForce = outness * (0.10 + unruhe * 0.10) * swirlDir;
+            ax += tangX * swirlForce;
+            ay += tangY * swirlForce;
+            // leichte Zentripetalkraft haelt den Schwarm beisammen
+            ax += (-wdx / wd) * outness * 0.012;
+            ay += (-wdy / wd) * outness * 0.012;
+          }
+        }
+      } else {
+        // Ohne Strich: sanftes Herumtreiben zur Mitte, kein Zappeln
+        ax += (W * 0.5 - a.x) * 0.00018;
+        ay += (H * 0.5 - a.y) * 0.00018;
+      }
+
+      // Individuelles, weiches Wandern (organisch, kein Insekten-Zappeln)
+      a.phase += dt * 1.2 * a.wob;
+      var wanderMag = (0.02 + unruhe * 0.06) * a.wob;
+      ax += Math.cos(a.phase * 1.7) * wanderMag;
+      ay += Math.sin(a.phase * 1.3) * wanderMag;
+
+      // Geschwindigkeit integrieren
+      a.vx += ax;
+      a.vy += ay;
+
+      // Daempfung fuer weiche, traege Bewegung
+      a.vx *= 0.94;
+      a.vy *= 0.94;
+
+      // Tempo begrenzen
+      var sp = Math.sqrt(a.vx * a.vx + a.vy * a.vy);
+      if (sp > maxSpeed) {
+        a.vx = (a.vx / sp) * maxSpeed;
+        a.vy = (a.vy / sp) * maxSpeed;
+      }
+
+      // Vorherige Position sichern (fuer den Flug-Strich)
+      a.px = a.x;
+      a.py = a.y;
+      a.x += a.vx;
+      a.y += a.vy;
+
+      // Weiche Raender: sanft zurueckdrehen statt hart abprallen
+      var m = 40;
+      if (a.x < m) a.vx += (m - a.x) * 0.004;
+      if (a.x > W - m) a.vx -= (a.x - (W - m)) * 0.004;
+      if (a.y < m) a.vy += (m - a.y) * 0.004;
+      if (a.y > H - m) a.vy -= (a.y - (H - m)) * 0.004;
+      // harte Sicherheitsgrenze
+      if (a.x < -60) a.x = -60; if (a.x > W + 60) a.x = W + 60;
+      if (a.y < -60) a.y = -60; if (a.y > H + 60) a.y = H + 60;
+    }
+
+    // Wirbelrichtung selten wechseln, fuer Abwechslung
+    if (Math.random() < 0.002) swirlDir *= -1;
+  }
+
+  // ---------- Rendering ----------
+  function render() {
+    // Sanftes Verblassen: halbtransparentes Papier ueberlagern -> Spuren fading
+    // Dies erzeugt die verblassenden Flug-Striche ("Kondensstreifen" aus Graphit).
+    ctx.fillStyle = "rgba(236, 229, 216, 0.16)";
+    ctx.fillRect(0, 0, W, H);
+
+    // Graphit-Marken: kurze Striche in Flugrichtung, koernig, halbtransparent.
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgb(44, 41, 44)";
+
+    var i, a;
+    for (i = 0; i < agents.length; i++) {
+      a = agents[i];
+      var dx = a.x - a.px, dy = a.y - a.py;
+      var sp2 = dx * dx + dy * dy;
+
+      // Deckkraft und Strichlaenge folgen der Geschwindigkeit:
+      // schnelle Agenten = zarte lange Streifen, langsame (am Strich) = satte Punkte.
+      var sp = Math.sqrt(sp2);
+      var alpha;
+      var lw;
+      if (sp < 0.35) {
+        // fast still: satte, koernige Graphit-Marke (Punkt)
+        alpha = 0.5 * a.tone;
+        lw = 1.5;
+      } else {
+        // in Bewegung: feiner, verblassender Flug-Strich
+        alpha = (0.16 + Math.min(sp, 5) * 0.05) * a.tone;
+        lw = 1.0;
+      }
+
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = lw;
+
+      if (sp < 0.35) {
+        // koernige Punkt-Marke mit winziger Zufalls-Verschiebung (Graphit-Grizzel)
+        var jx = (Math.random() - 0.5) * 1.2;
+        var jy = (Math.random() - 0.5) * 1.2;
+        ctx.beginPath();
+        ctx.moveTo(a.x + jx, a.y + jy);
+        ctx.lineTo(a.x + jx + 0.6, a.y + jy + 0.6);
+        ctx.stroke();
+      } else {
+        // kurzer Strich in Flugrichtung, etwas ueber die letzte Bewegung hinaus
+        var ext = 1.0 + Math.min(sp, 5) * 0.4; // Laenge nach Tempo
+        ctx.beginPath();
+        ctx.moveTo(a.px - dx * (ext - 1) * 0.4, a.py - dy * (ext - 1) * 0.4);
+        ctx.lineTo(a.x, a.y);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- Frame-Takt ----------
+  var lastT = performance.now();
+  var acc = 0;
+  var FIXED = 1 / 60;
+
+  function frame(now) {
+    var dt = (now - lastT) / 1000;
+    lastT = now;
+    if (dt > 0.05) dt = 0.05; // grosse Luecken deckeln (Tab-Wechsel)
+
+    if (!frozen) {
+      // feste Schrittweite fuer stabile Physik, Arbeit gedeckelt
+      acc += dt;
+      var guard = 0;
+      while (acc >= FIXED && guard < 3) {
+        step(FIXED);
+        acc -= FIXED;
+        guard++;
+      }
+      if (guard === 3) acc = 0; // Rueckstand verwerfen, statt aufzustauen
+      render();
+    }
+    // Bei frozen: nichts neu zeichnen -> Bild eingefroren ("Stecker gezogen")
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- Start ----------
+  window.addEventListener("resize", function () {
+    resize();
+    buildAttrGrid();
+    buildFlockGrid();
+  });
+
+  resize();
+  buildFlockGrid();
+  buildAttrGrid();
+  seedAgents();
+  swirlCx = W * 0.5; swirlCy = H * 0.5;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
