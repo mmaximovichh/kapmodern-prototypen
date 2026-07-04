@@ -32,6 +32,8 @@
   #bar button.danger{ background:rgba(150,40,40,.12); border-color:rgba(150,40,40,.4); color:#7a1f1f; }
   #bar .lbl{ cursor:default; display:flex; align-items:center; gap:8px; }
   #bar input[type=range]{ width:120px; accent-color:#3a3740; }
+  #ki{ position:fixed; top:14px; right:16px; z-index:11; background:rgba(44,41,44,.87); color:#ece5d8;
+    font-size:12px; letter-spacing:.4px; padding:7px 12px; border-radius:9px; max-width:46vw; line-height:1.4; }
 </style>
 </head>
 <body>
@@ -39,6 +41,7 @@
 <canvas id="live"></canvas>
 <div id="grain"></div>
 <div id="hint">Ein Instrument. Waehle links ein Werkzeug und spiele.</div>
+<div id="ki" hidden></div>
 <div id="tools"></div>
 <div id="bar">
   <div class="lbl">Dosis <input id="slDosis" type="range" min="20" max="160" value="70"></div>
@@ -134,8 +137,8 @@ function loop(now){ const dt=now-lastT; lastT=now; if(power) clock+=dt;
   base.style.opacity=(1-Math.min(1,wakeLevel*1.15)).toFixed(3);
   lctx.clearRect(0,0,W,H);
   for(let i=liveMarks.length-1;i>=0;i--){ const m=liveMarks[i], p=Math.min(1,(clock-m.born)/m.dur), cnt=Math.max(2,Math.floor(p*m.pts.length));
-    pathGriz(lctx, m.pts.slice(0,cnt), 1.5, m.tone, 0.5);
-    if(p>=1){ pathGriz(bctx, m.pts, 1.5, m.tone, 0.45); liveMarks.splice(i,1); } }
+    pathGriz(lctx, m.pts.slice(0,cnt), m.w||1.5, m.tone, 0.5);
+    if(p>=1){ pathGriz(bctx, m.pts, m.w||1.5, m.tone, 0.45); liveMarks.splice(i,1); } }
   if(particles){ renderParticles(); if(wakeTarget<=0 && wakeLevel<0.02){ particles=null; base.style.opacity='1'; } }
   requestAnimationFrame(loop); }
 requestAnimationFrame(loop);
@@ -147,6 +150,8 @@ live.addEventListener('pointerdown', e=>{ pressing=true; live.setPointerCapture(
   if(tool==='pencil'){ drawStroke=[p]; }
   else if(tool==='wachsen'){ addTip(p.x,p.y,Math.random()*6.28); }
   else if(tool==='echo'){ spawnEcho(p.x,p.y); }
+  else if(tool==='kistrich'){ kiStrich(p); }
+  else if(tool==='kiblick'){ kiBlick(); }
   else if(tool==='radierer'){ erase(p.x,p.y); } });
 live.addEventListener('pointermove', e=>{ if(!pressing) return; const p=pos(e), dx=p.x-lastPt.x, dy=p.y-lastPt.y; if(dx*dx+dy*dy<6 && tool!=='wischen') return;
   if(tool==='pencil'){ seg(bctx,lastPt.x,lastPt.y,p.x,p.y, (2.0+dosis*1.4), 0, 0.5); if(drawStroke) drawStroke.push(p); }
@@ -158,7 +163,7 @@ function up(){ if(!pressing) return; pressing=false; if(tool==='pencil' && drawS
 live.addEventListener('pointerup',up); live.addEventListener('pointercancel',up);
 
 // ---- Werkzeugleiste ----
-const TOOLS=[['pencil','Bleistift','1'],['wachsen','Wachsen','2'],['echo','Echo, KI','3'],['wischen','Wischen','4'],['radierer','Radierer','5']];
+const TOOLS=[['pencil','Bleistift','1'],['wachsen','Wachsen','2'],['echo','Echo','3'],['wischen','Wischen','4'],['radierer','Radierer','5'],['kistrich','KI-Strich','6'],['kiblick','KI-Blick','7']];
 const toolsEl=document.getElementById('tools');
 function selectTool(id){ tool=id; [...toolsEl.children].forEach(b=>b.classList.toggle('on', b.dataset.id===id)); }
 TOOLS.forEach(([id,label,key])=>{ const b=document.createElement('button'); b.dataset.id=id;
@@ -166,6 +171,41 @@ TOOLS.forEach(([id,label,key])=>{ const b=document.createElement('button'); b.da
 selectTool('pencil');
 window.addEventListener('keydown', e=>{ const t=TOOLS.find(t=>t[2]===e.key); if(t) selectTool(t[0]);
   if(e.code==='Space'){ e.preventDefault(); togglePlug(); } });
+
+// ---- Echte KI (laeuft nur mit lokalem Server: python3 execution/kap_ki_server.py) ----
+let kiOk=false, kiBusy=false, kiTimer=null;
+const kiEl=document.getElementById('ki');
+function kiShow(t,ms){ kiEl.hidden=false; kiEl.textContent=t; clearTimeout(kiTimer); if(ms) kiTimer=setTimeout(()=>{kiEl.hidden=true;},ms); }
+fetch('api/health').then(r=>r.json()).then(j=>{ kiOk=!!(j&&j.ok); }).catch(()=>{ kiOk=false; });
+function exportPng(){ const ex=document.createElement('canvas'); ex.width=1536; ex.height=1024; const x=ex.getContext('2d');
+  x.fillStyle='rgb('+PAPER.join(',')+')'; x.fillRect(0,0,ex.width,ex.height);
+  x.drawImage(base,0,0,base.width,base.height,0,0,ex.width,ex.height); return ex.toDataURL('image/png'); }
+function kiGate(){ if(kiBusy){ return false; }
+  if(!kiOk){ kiShow('Die KI-Werkzeuge laufen nur lokal: im Workspace "python3 execution/kap_ki_server.py" starten und http://localhost:8787 oeffnen.',6000); return false; }
+  return true; }
+async function kiStrich(p){ if(!kiGate()) return; kiBusy=true; kiShow('die Maschine schaut auf das Blatt ...');
+  try{
+    const r=await fetch('api/kistrich',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image:exportPng(), punkt:[p.x/W, p.y/H], dosis})});
+    const j=await r.json(); if(j.error) throw new Error(j.error);
+    (j.striche||[]).forEach((s,si)=>{ const pts=(s.punkte||[]).map(q=>({x:q[0]*W, y:q[1]*H}));
+      if(pts.length>1) setTimeout(()=>{ liveMarks.push({pts, born:clock, dur:500+pts.length*35, tone:1, w:s.breite||1.8}); }, si*400); });
+    kiShow(j.gedanke||'', j.gedanke?4000:1);
+  }catch(e){ kiShow('KI-Fehler: '+e.message, 6000); }
+  finally{ kiBusy=false; } }
+let blickImg=null, blickAlpha=0;
+function fadeBlick(){ if(!blickImg) return; if(power){ blickAlpha+=0.016;
+    bctx.save(); bctx.globalAlpha=0.06; bctx.drawImage(blickImg,0,0,W,H); bctx.restore(); }
+  if(blickAlpha<1) requestAnimationFrame(fadeBlick); else blickImg=null; }
+async function kiBlick(){ if(!kiGate()) return; kiBusy=true; kiShow('die Maschine verwandelt das Blatt (dauert etwas) ...');
+  try{
+    const r=await fetch('api/kiblick',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image:exportPng(), qualitaet:'medium'})});
+    const j=await r.json(); if(j.error) throw new Error(j.error);
+    const img=new Image(); img.onload=()=>{ blickImg=img; blickAlpha=0; fadeBlick(); }; img.src=j.bild;
+    kiShow('die Zeichnung der Maschine legt sich auf das Blatt', 4000);
+  }catch(e){ kiShow('KI-Fehler: '+e.message, 8000); }
+  finally{ kiBusy=false; } }
 
 // ---- Bedienung ----
 function togglePlug(){ power=!power; btnPlug.textContent=power?'Stecker ziehen':'Stecker rein'; document.body.style.filter=power?'none':'contrast(.93) brightness(.98)'; }
