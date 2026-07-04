@@ -162,7 +162,7 @@ live.addEventListener('pointerdown', e=>{ pressing=true; live.setPointerCapture(
   else if(tool==='wachsen'){ addTip(p.x,p.y,Math.random()*6.28); }
   else if(tool==='echo'){ spawnEcho(p.x,p.y); }
   else if(tool==='kistrich'){ kiStrich(p); }
-  else if(tool==='kiblick'){ kiBlick(); }
+  else if(tool==='vollenden'){ kiVollenden(p); }
   else if(tool==='radierer'){ erase(p.x,p.y); } });
 live.addEventListener('pointermove', e=>{ if(!pressing) return; const p=pos(e), dx=p.x-lastPt.x, dy=p.y-lastPt.y; if(dx*dx+dy*dy<6 && tool!=='wischen') return;
   if(tool==='pencil'){ seg(bctx,lastPt.x,lastPt.y,p.x,p.y, (2.0+dosis*1.4), 0, 0.5); if(drawStroke) drawStroke.push(p); }
@@ -174,7 +174,7 @@ function up(){ if(!pressing) return; pressing=false; if(tool==='pencil' && drawS
 live.addEventListener('pointerup',up); live.addEventListener('pointercancel',up);
 
 // ---- Werkzeugleiste ----
-const TOOLS=[['pencil','Bleistift','1'],['wachsen','Wachsen','2'],['echo','Echo','3'],['wischen','Wischen','4'],['radierer','Radierer','5'],['kistrich','KI-Strich','6'],['kiblick','KI-Blick','7']];
+const TOOLS=[['pencil','Bleistift','1'],['wachsen','Wachsen','2'],['echo','Echo','3'],['wischen','Wischen','4'],['radierer','Radierer','5'],['kistrich','KI-Strich','6'],['vollenden','Vollenden','7']];
 const toolsEl=document.getElementById('tools');
 function selectTool(id){ tool=id; [...toolsEl.children].forEach(b=>b.classList.toggle('on', b.dataset.id===id)); }
 TOOLS.forEach(([id,label,key])=>{ const b=document.createElement('button'); b.dataset.id=id;
@@ -217,6 +217,22 @@ async function kiStrich(p){ if(!kiGate()) return; kiBusy=true; kiPending={x:p.x,
       delay+=dur*0.7; });
     if(j.gedanke){ lastGedanke=j.gedanke; kiShow(j.gedanke, 5000); } else kiShow('', 1);
   }catch(e){ kiShow('KI-Fehler: '+e.message, 6000); }
+  finally{ kiBusy=false; kiPending=null; } }
+// Vollenden: die Maschine erkennt, was in den Linien steckt, und zeichnet das Blatt fertig.
+async function kiVollenden(p){ if(!kiGate()) return; kiBusy=true; kiPending={x:p.x,y:p.y};
+  kiShow('die Maschine schaut, was in deinen Linien steckt ...');
+  try{
+    const r=await fetch('api/vollenden',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image:exportPng(), dosis})});
+    const j=await r.json(); if(j.error) throw new Error(j.error);
+    let delay=0;
+    (j.striche||[]).forEach(s=>{ let pts=(s.punkte||[]).map(q=>({x:q[0]*W, y:q[1]*H}));
+      if(pts.length<2) return; pts=smoothPath(pts,6);
+      const dur=Math.min(2200,Math.max(320,pathLength(pts)*3));   // zuegiges, sichtbares Zeichnen
+      setTimeout(()=>{ liveMarks.push({pts, born:clock, dur, tone:1, w:s.breite||1.8, tip:true}); }, delay);
+      delay+=dur*0.75; });
+    if(j.gedanke){ lastGedanke=j.gedanke; kiShow(j.gedanke, Math.max(8000, delay)); } else kiShow('', 1);
+  }catch(e){ kiShow('KI-Fehler: '+e.message, 8000); }
   finally{ kiBusy=false; kiPending=null; } }
 let blickImg=null, blickAlpha=0;
 function fadeBlick(){ if(!blickImg) return; if(power){ blickAlpha+=0.016;
